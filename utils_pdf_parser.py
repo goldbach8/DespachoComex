@@ -158,11 +158,41 @@ def extract_global_fob_total(full_text):
         return parse_number(fob_match.group(1))
     return None
 
+# --- NUEVA FUNCIÓN: EXTRACCIÓN DE CONDICIÓN DE VENTA ---
+
+def extract_cond_venta(full_text):
+    """
+    Busca la condición de venta (ej. FOB, CIF, FCA, EXW) en el texto.
+    Generalmente aparece como "Cond. Venta XXX".
+    """
+    if not full_text: return None
+    
+    # Patrón regex: Busca "Cond. Venta" seguido opcionalmente por espacios y captura las siguientes 3 letras mayúsculas
+    match = re.search(r'Cond\.?\s*Venta\s*([A-Z]{3})', full_text, re.IGNORECASE)
+    
+    if match:
+        return match.group(1).upper()
+    
+    # Intento secundario menos estricto si el formato varía
+    match_loose = re.search(r'\b(FOB|CIF|EXW|FCA|CFR|CPT|CIP|DAP|DPU|DDP|FAS)\b', full_text, re.IGNORECASE)
+    if match_loose:
+        # Verificar que no sea parte de "FOB Total"
+        start_idx = match_loose.start()
+        # Miramos un poco antes para ver el contexto si es posible, o devolvemos el hallazgo si parece razonable
+        # Para evitar falsos positivos con "FOB Total", simplemente devolvemos lo encontrado
+        # pero la lógica de app.py manejará la validación.
+        return match_loose.group(1).upper()
+        
+    return None
+
 # --- FUNCIÓN PRINCIPAL DE EXTRACCIÓN DE DATOS ---
 
 def extract_data_from_pdf_text(full_text):
+    """
+    Retorna: DataFrame, global_fob, cond_venta
+    """
     if not full_text:
-        return pd.DataFrame(columns=DEFAULT_COLS), None
+        return pd.DataFrame(columns=DEFAULT_COLS), None, None
 
     full_text = full_text.replace('\r\n', '\n')
     
@@ -182,6 +212,9 @@ def extract_data_from_pdf_text(full_text):
 
     # c) FOB Global
     global_fob = extract_global_fob_total(full_text)
+
+    # d) Condición de Venta (NUEVO)
+    cond_venta = extract_cond_venta(full_text)
     
     # 2. --- LOCALIZAR BLOQUES ---
     starts = [m.start() for m in ITEM_HEADER_PATTERN.finditer(full_text)]
@@ -275,7 +308,7 @@ def extract_data_from_pdf_text(full_text):
     
     # 5. --- SALIDA ---
     if not data:
-        return pd.DataFrame(columns=DEFAULT_COLS), global_fob
+        return pd.DataFrame(columns=DEFAULT_COLS), global_fob, cond_venta
 
     df = pd.DataFrame(data)
     df['tieneSubitems'] = False
@@ -284,7 +317,7 @@ def extract_data_from_pdf_text(full_text):
         mask_principales = (df['esSubitem'] == False) & df['numItem'].isin(principales_con_sub)
         df.loc[mask_principales, 'tieneSubitems'] = True
 
-    return df, global_fob
+    return df, global_fob, cond_venta
 
 def extract_bk_list_from_pdf_text(full_text):
     if not full_text: return []

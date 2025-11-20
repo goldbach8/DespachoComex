@@ -44,6 +44,24 @@ def load_css():
         }
         .stDataFrame { border: 1px solid #ddd; border-radius: 5px; }
         div[data-testid="stMetricValue"] { font-size: 1.4rem !important; }
+        
+        /* Estilo para alerta de Condición de Venta */
+        .metric-alert-box {
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: bold;
+            text-align: center;
+        }
+        .alert-red {
+            background-color: #ffcccc;
+            color: #cc0000;
+            border: 1px solid #cc0000;
+        }
+        .alert-green {
+            background-color: #ccffcc;
+            color: #006600;
+            border: 1px solid #006600;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -92,9 +110,10 @@ def reset_app():
     st.session_state.proveedor_mapping = {}
     st.session_state.referencia = ""
     st.session_state.global_fob_total = None
+    st.session_state.cond_venta = None # Nuevo estado
     st.session_state.df_validation_fob = pd.DataFrame()
     st.session_state.df_results_grouped = pd.DataFrame()
-    st.session_state.detected_vendors = [] # Nueva variable para vendedores detectados
+    st.session_state.detected_vendors = [] 
     st.session_state.app_step = 1
 
 def initialize_session_state():
@@ -107,11 +126,11 @@ def initialize_session_state():
         st.session_state.known_suppliers = load_list_from_json(SUPPLIERS_PATH, INITIAL_SUPPLIERS)
 
 # --- CONFIGURACIÓN INICIAL ---
-st.set_page_config(page_title="Analizador SIM Pro", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Despachos - NCM", layout="wide", initial_sidebar_state="collapsed")
 load_css()
 initialize_session_state()
 
-st.title("🗃️ Analizador de Despachos SIM")
+st.title("🗃️ Despachos - NCM")
 render_stepper(st.session_state.app_step)
 
 # --- SIDEBAR ---
@@ -158,8 +177,8 @@ if st.session_state.app_step == 1:
                     full_text_pages = [p.extract_text() for p in reader.pages]
                     full_text = "\n".join(full_text_pages)
                     
-                    # 2. Extraer datos de ítems
-                    df_items, global_fob = extract_data_from_pdf_text(full_text)
+                    # 2. Extraer datos de ítems y metadatos (Ahora devuelve 3 valores)
+                    df_items, global_fob, cond_venta = extract_data_from_pdf_text(full_text)
                     
                     # 3. Extraer Vendedores de la Página 1
                     first_page_text = full_text_pages[0] if full_text_pages else ""
@@ -170,8 +189,9 @@ if st.session_state.app_step == 1:
                     else:
                         st.session_state.data_items = df_items
                         st.session_state.global_fob_total = global_fob
+                        st.session_state.cond_venta = cond_venta # Guardamos condición venta
                         st.session_state.pdf_data_loaded = True
-                        st.session_state.detected_vendors = detected_vendors # Guardar vendedores detectados
+                        st.session_state.detected_vendors = detected_vendors 
                         
                         if detected_vendors:
                             st.toast(f"🏢 Se detectaron {len(detected_vendors)} vendedores en carátula.")
@@ -257,21 +277,16 @@ elif st.session_state.app_step == 3:
             col = cols[i % 3]
             
             # Pre-selección inteligente:
-            # 1. Si la marca coincide con uno detectado -> Seleccionar ese detectado.
-            # 2. Si la marca coincide con uno histórico -> Seleccionar ese histórico.
             default_idx = 0
-            
-            # Buscar coincidencia exacta en opciones
             if marca in options:
                 default_idx = options.index(marca)
             
             sel = col.selectbox(f"Marca: {marca}", options, index=default_idx, key=f"map_{i}")
             
-            if sel == '-- Nuevo proveedor --':
+            if sel == '-- Ignorar/Original --':
                 custom = col.text_input(f"¿Nuevo para {marca}?", key=f"new_{i}").strip().upper()
                 new_mapping[marca] = custom if custom else marca
             elif sel == '--- Otros Históricos ---':
-                # Caso borde si seleccionan el separador, lo tratamos como ignorar
                 new_mapping[marca] = marca 
             else:
                 new_mapping[marca] = sel
@@ -312,28 +327,24 @@ elif st.session_state.app_step == 4:
 
         # Métricas
         global_fob_pdf = st.session_state.get('global_fob_total')
+        cond_venta = st.session_state.get('cond_venta', 'DESC') # Valor por defecto si es None
+        
         total_grouped_fob = df_final['Monto Total de la Posición Arancelaria'].sum()
         moneda = df_final['Moneda'].iloc[0] if not df_final.empty else "USD"
         
-        col_m1, col_m2, col_m3 = st.columns(3)
+        # FILA 1 DE MÉTRICAS: FOB y COMPARACIÓN
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         col_m1.metric("Suma FOB Items", f"{total_grouped_fob:,.2f} {moneda}")
         
         if global_fob_pdf is not None:
             delta = total_grouped_fob - global_fob_pdf
-            
-            # LÓGICA CORREGIDA DE COLOR:
-            # Si abs(delta) < 0.01 (es cero) -> 'off' (Gris/Neutro)
-            # Si NO es cero:
-            #   Si delta > 0 (Suma mayor que Global) -> 'inverse' (Rojo)
-            #   Si delta < 0 (Suma menor que Global) -> 'normal' (Rojo en valor negativo)
-            
             if abs(delta) < 0.01:
                 delta_color = "off"
             else:
                 delta_color = "inverse" if delta > 0 else "normal"
 
             col_m2.metric(
-                label="FOB Global (PDF Original)", 
+                label="FOB Global (PDF)", 
                 value=f"{global_fob_pdf:,.2f} {moneda}", 
                 delta=f"{delta:,.2f} Diff", 
                 delta_color=delta_color)
@@ -341,6 +352,25 @@ elif st.session_state.app_step == 4:
             col_m2.metric("FOB Global (PDF)", "No detectado")
             
         col_m3.metric("Proveedores", len(df_summary))
+        
+        # MÉTRICA DE CONDICIÓN DE VENTA CON ALERTA VISUAL
+        with col_m4:
+            if cond_venta == 'FOB':
+                st.markdown(
+                    f"""
+                    <div class="metric-alert-box alert-green">
+                        Cond. Venta<br><span style="font-size: 1.4rem;">{cond_venta}</span>
+                    </div>
+                    """, unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div class="metric-alert-box alert-red">
+                        Cond. Venta<br><span style="font-size: 1.4rem;">{cond_venta if cond_venta else 'N/A'}</span>
+                    </div>
+                    """, unsafe_allow_html=True
+                )
         
         st.markdown("---")
         st.subheader("📋 Resumen por Proveedor y % BK")
