@@ -2,8 +2,7 @@ import re
 import pandas as pd
 import logging
 
-# Configuración básica de logging para capturar la salida
-# En Streamlit esto se redirige a la consola de la terminal
+# Configuración básica de logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -15,11 +14,8 @@ def parse_number(num_str):
     """
     if not num_str:
         return None
-    # 1. Eliminar separador de miles (puntos)
     s = num_str.replace('.', '')
-    # 2. Reemplazar separador decimal (coma) por punto
     s = s.replace(',', '.')
-    
     try:
         n = float(s)
         return n
@@ -28,22 +24,12 @@ def parse_number(num_str):
 
 # --- CONSTANTES DE REGEX ---
 
-# Patrón para extraer solo NCM de 8 dígitos para la lista BK (dddd.dd.dd)
 NCM_BK_PATTERN = re.compile(r'(\d{4}\.\d{2}\.\d{2})')
-
-# Patrón para el Nro de Despacho en el encabezado
 DESPACHO_PATTERN = re.compile(r'(\d{2})\s+(\d{3})\s+([A-Z0-9]{4})\s+(\d{6})\s+([A-Z])')
-
-# Patrón para encontrar la cabecera de Item (Anclaje de Bloque)
 ITEM_HEADER_PATTERN = re.compile(r'N.? Item', re.IGNORECASE)
-
-# Patrón para el NCM completo (Posición SIM)
 POSICION_PATTERN = re.compile(r'(\d{4}\.\d{2}\.\d{2}\.\d{3}[A-Z])')
-
-# Patrón para el Monto FOB Total Divisa (global o en bloque, formato 1.234,56)
 FOB_AMOUNT_PATTERN = re.compile(r'\d{1,3}(?:\.\d{3})*,\d{2}')
 
-# Patrón para encontrar Subitems detallados 
 SUBITEM_DETAILED_PATTERN = re.compile(
     r'Nro\. ítem:\s*(\d+)\s+Posición SIM:\s*([0-9\.A-Z]+)\s+Subitem Nro\.\s*:\s*(\d+)[\s\S]*?'
     r'Monto FOB:\s*(' + FOB_AMOUNT_PATTERN.pattern + r')[\s\S]*?'
@@ -51,53 +37,134 @@ SUBITEM_DETAILED_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# Columnas mínimas de salida del parser
 DEFAULT_COLS = [
     'despacho', 'posicion', 'moneda', 'montoFob', 
     'proveedor', 'esSubitem', 'tieneSubitems', 'numItem', 
     'itemPrincipal'
 ]
 
+# --- NUEVA FUNCIÓN: EXTRACCIÓN DE VENDEDORES (ROBUSTA V3) ---
 
-# --- FUNCIÓN DE EXTRACCIÓN DE FOB GLOBAL (Validación 3) ---
+def extract_vendors_from_first_page(first_page_text):
+    """
+    Extrae vendedores buscando el bloque específico 'Vendedor' en la carátula.
+    Incluye lógica para separar nombres pegados y limpieza agresiva de basura.
+    """
+    if not first_page_text:
+        return []
+    
+    lines = [l.strip() for l in first_page_text.split('\n') if l.strip()]
+    vendors = []
+    
+    # Palabras clave de parada (Fin del bloque Vendedor) - AMPLIADA
+    stop_keywords = [
+        "VIA", "VÍA", "DOCUMENTO", "IDENTIFICADOR", "MANIFIESTO", 
+        "NOMBRE", "BANDERA", "PUERTO", "FECHA", "MARCAS", 
+        "EMBALAJE", "TOTAL", "PESO", "ADUANA", "SUBREGIMEN",
+        "VALOR", "MERCADERIA", "LIQUIDACION", "INFORMACION",
+        "NALADISA", "GATT", "AFIP", "ITEM", "POSICION", "SIM",
+        "ESTADO", "ORIGEN", "PROCEDENCIA", "DESTINO", "UNIDAD"
+    ]
+    
+    # Palabras clave de "Basura" (Líneas que NO son vendedores)
+    trash_keywords = [
+        "IMPORTE", "TASA", "DERECHOS", "PAGADO", "GARANTIZADO", 
+        "A COBRAR", "CANAL", "OFICIALIZADO", "SIM", "HOJA", 
+        "2025", "2024", "CUIT", "N°", "P/G/C", "CONCEPTOS",
+        "ESTADOS UNIDOS", "KILOGRAMO", "CANTIDAD", "ESTADISTICA",
+        "COEF.", "BASE IVA", "IMPUESTOS", "1993"
+    ]
+
+    # 1. ESTRATEGIA POSICIONAL (Bloque Vendedor)
+    start_idx = -1
+    for i, line in enumerate(lines):
+        line_upper = line.upper()
+        # Buscamos el encabezado exacto "Vendedor", ignorando "VARIOS VENDEDORES"
+        if "VENDEDOR" in line_upper and "VARIOS" not in line_upper:
+            start_idx = i
+            break
+    
+    if start_idx != -1:
+        # Escanear líneas hacia abajo desde "Vendedor"
+        max_lines_to_scan = 12 # Reducido para evitar leer demasiado
+        scan_count = 0
+        
+        for i in range(start_idx + 1, len(lines)):
+            line = lines[i]
+            line_upper = line.upper()
+            scan_count += 1
+            
+            if scan_count > max_lines_to_scan:
+                break
+            
+            # Si encontramos un encabezado de parada, terminamos
+            if any(keyword in line_upper for keyword in stop_keywords):
+                break
+            
+            # --- FILTROS DE BASURA ---
+            if len(line) < 3: continue
+            if re.search(r'\d{2}-\d{8}-\d', line): continue # CUIT
+            if "CUIT" in line_upper: continue
+            if any(tk in line_upper for tk in trash_keywords): continue
+            # Códigos alfanuméricos sueltos (ids internos)
+            if re.match(r'^[A-Z0-9]+$', line) and len(line) < 8 and not any(c.isalpha() for c in line):
+                continue
+
+            # --- LÓGICA DE SEPARACIÓN Y EXTRACCIÓN ---
+            
+            # Caso Específico: "COSTEX TRACTOR PARTS MIRANDA CONSULTING"
+            # A veces el PDF pierde el guion o espacio grande.
+            if "COSTEX" in line_upper and "MIRANDA" in line_upper:
+                 # Forzamos la separación
+                 vendors.append("COSTEX TRACTOR PARTS")
+                 vendors.append("MIRANDA CONSULTING")
+                 continue
+
+            # Separar si hay múltiples vendedores en una línea (separados por / o -)
+            current_candidates = []
+            if " / " in line:
+                current_candidates = [p.strip() for p in line.split(" / ")]
+            elif " - " in line and not re.search(r'\d', line): # Guión como separador de texto
+                 current_candidates = [p.strip() for p in line.split(" - ")]
+            else:
+                current_candidates = [line]
+            
+            for cand in current_candidates:
+                if len(cand) > 2:
+                    vendors.append(cand)
+
+    # 2. LIMPIEZA FINAL Y FORMATEO
+    clean_vendors = []
+    for v in sorted(list(set(vendors))):
+        v_up = v.upper()
+        # Filtros finales de seguridad contra basura persistente
+        if any(x in v_up for x in ["OM-1993", "PAGINA", "HOJA", "DECLARACION", "LIQUIDACION"]):
+            continue
+        if len(v) < 3: continue
+        
+        clean_vendors.append(v)
+
+    return clean_vendors
+
+# --- FUNCIÓN DE EXTRACCIÓN DE FOB GLOBAL ---
 
 def extract_global_fob_total(full_text):
-    """Extrae el monto FOB Total Divisa del texto completo."""
-    if not full_text:
-        return None
-    
-    # Patrón: "FOB Total Divisa" seguido de cualquier cosa, y luego un número 
-    # grande en formato SIM (con . para miles y , para decimales)
+    if not full_text: return None
     fob_match = re.search(
         r'FOB\s*Total\s*Divisa[\s\S]*?(' + FOB_AMOUNT_PATTERN.pattern + r')\b', 
-        full_text, 
-        re.IGNORECASE
+        full_text, re.IGNORECASE
     )
-    
     if fob_match:
-        fob_str = fob_match.group(1)
-        return parse_number(fob_str) 
-        
+        return parse_number(fob_match.group(1))
     return None
 
 # --- FUNCIÓN PRINCIPAL DE EXTRACCIÓN DE DATOS ---
-def extract_data_from_pdf_text(full_text):
-    """
-    Procesa el texto completo del PDF de despacho SIM para extraer ítems, subítems 
-    y datos globales, siguiendo la lógica de filtrado original.
 
-    Retorna:
-        pd.DataFrame: DataFrame con ítems y subítems.
-        float: El monto FOB Total Divisa global.
-    """
+def extract_data_from_pdf_text(full_text):
     if not full_text:
-        logger.info("Texto de PDF vacío, retornando datos vacíos.")
         return pd.DataFrame(columns=DEFAULT_COLS), None
 
-    # Normalizar saltos de línea y texto
     full_text = full_text.replace('\r\n', '\n')
-    
-    # 1. --- DATOS GLOBALES ---
     
     # a) Despacho
     despacho = ""
@@ -113,23 +180,19 @@ def extract_data_from_pdf_text(full_text):
     if moneda_match:
         moneda_global = moneda_match.group(1)
 
-    # c) FOB Global (Validación 3)
+    # c) FOB Global
     global_fob = extract_global_fob_total(full_text)
-    logger.info(f"--- Extracción de Despacho SIM ---")
-    logger.info(f"Despacho Nro: {despacho} | Moneda: {moneda_global} | FOB Total Global: {global_fob}")
     
-    # 2. --- LOCALIZAR BLOQUES DE ÍTEMS PRINCIPALES ---
+    # 2. --- LOCALIZAR BLOQUES ---
     starts = [m.start() for m in ITEM_HEADER_PATTERN.finditer(full_text)]
+    data = []
     
-    data = []  # Lista para almacenar los resultados
-    
-    # 3. --- PROCESAR ÍTEMS PRINCIPALES ---
+    # 3. --- ÍTEMS PRINCIPALES ---
     for i, start in enumerate(starts):
         end = starts[i + 1] if i + 1 < len(starts) else len(full_text)
         block = full_text[start:end]
         lines = [l.strip() for l in block.split('\n') if l.strip()]
 
-        # 3.1) Extraer Nro de Ítem y su índice
         num_item = None
         idx_num = None
         for idx, line in enumerate(lines):
@@ -139,7 +202,6 @@ def extract_data_from_pdf_text(full_text):
                 idx_num = idx
                 break
 
-        # 3.2) Buscar la posición SIM (NCM) en el bloque, idealmente desde la línea del ítem
         posicion = None
         if idx_num is not None:
             for li in range(idx_num, len(lines)):
@@ -147,8 +209,6 @@ def extract_data_from_pdf_text(full_text):
                 if m_pos:
                     posicion = m_pos.group(1)
                     break
-
-        # Fallback: buscar en todo el bloque
         if not posicion:
             for li in range(len(lines)):
                 m_pos = POSICION_PATTERN.search(lines[li])
@@ -156,47 +216,28 @@ def extract_data_from_pdf_text(full_text):
                     posicion = m_pos.group(1)
                     break
 
-        if not posicion:
-            # Si seguimos sin posición, descartamos el bloque
-            continue
+        if not posicion: continue
 
-        # 3.3) Proveedor (marca AA(...))
         proveedor = None
         marca_match = re.search(r'AA\s*\(\s*([^)]+?)\s*\)', block)
         if marca_match:
-            proveedor_str = marca_match.group(1).strip()
-            if proveedor_str:
-                proveedor = proveedor_str
+            proveedor = marca_match.group(1).strip()
 
-        # 3.4) montoFob: buscar a partir de "UNIDAD"
         monto_fob = None
         idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)
-
         numeros_str = []
         if idx_unidad != -1:
             for li in range(idx_unidad, len(lines)):
                 nums_line = FOB_AMOUNT_PATTERN.findall(lines[li])
                 if nums_line:
                     numeros_str.extend(nums_line)
-                if len(numeros_str) >= 4:
-                    break
+                if len(numeros_str) >= 4: break
+            
+            if len(numeros_str) >= 2: monto_fob = parse_number(numeros_str[1])
+            if len(numeros_str) >= 3: monto_fob = parse_number(numeros_str[1])
+            if len(numeros_str) >= 4: monto_fob = parse_number(numeros_str[2])
+            if len(numeros_str) >= 5: monto_fob = parse_number(numeros_str[3])
 
-            # Ajustar estos índices según tu layout real:
-            if len(numeros_str) >= 2:
-                monto_fob = parse_number(numeros_str[1])
-            if len(numeros_str) >= 3:
-                monto_fob = parse_number(numeros_str[1])
-            if len(numeros_str) >= 4:
-                monto_fob = parse_number(numeros_str[2])
-            if len(numeros_str) >= 5:
-                monto_fob = parse_number(numeros_str[3])
-
-        logger.info(
-            f"  [Item Principal {num_item}] Posición: {posicion}, Proveedor: '{proveedor}'. "
-            f"Números (Cants/FOB): {numeros_str}. FOB Extraído: {monto_fob}."
-        )
-
-        # OJO: por ahora NO marcamos tieneSubitems; se corregirá luego
         data.append({
             'despacho': despacho,
             'posicion': posicion,
@@ -204,13 +245,12 @@ def extract_data_from_pdf_text(full_text):
             'montoFob': monto_fob,
             'proveedor': proveedor,
             'esSubitem': False,
-            'tieneSubitems': False,   # placeholder, se recalcula después
+            'tieneSubitems': False,
             'numItem': num_item,
             'itemPrincipal': None,
         })
 
-    # 4. --- PROCESAR SUBITEMS ---
-    subitem_count = 0
+    # 4. --- SUBITEMS ---
     for sm in SUBITEM_DETAILED_PATTERN.finditer(full_text):
         nro_item_principal = sm.group(1).zfill(4)
         posicion_sub = sm.group(2).strip()
@@ -221,12 +261,6 @@ def extract_data_from_pdf_text(full_text):
         monto_sub_fob = parse_number(fob_str)
         proveedor_sub = proveedor_sub_str if proveedor_sub_str else None
         
-        logger.info(
-            f"  [Subitem {nro_item_principal}-{num_subitem}] Posición: {posicion_sub}, "
-            f"Proveedor: '{proveedor_sub}'. FOB Extraído: {monto_sub_fob}"
-        )
-        subitem_count += 1
-
         data.append({
             'despacho': despacho,
             'posicion': posicion_sub,
@@ -234,53 +268,25 @@ def extract_data_from_pdf_text(full_text):
             'montoFob': monto_sub_fob,
             'proveedor': proveedor_sub,
             'esSubitem': True,
-            'tieneSubitems': False,   # los subitems nunca "tienen subitems"
+            'tieneSubitems': False,
             'numItem': num_subitem,
             'itemPrincipal': nro_item_principal,
         })
     
-    logger.info(f"Total de Subitems procesados: {subitem_count}")
-
-    # 5. --- SALIDA FINAL ---
+    # 5. --- SALIDA ---
     if not data:
         return pd.DataFrame(columns=DEFAULT_COLS), global_fob
 
     df = pd.DataFrame(data)
-
-    # Recalcular tieneSubitems de forma CORRECTA:
-    # un ítem principal tiene subitems si existe algún registro con esSubitem=True
-    # cuyo itemPrincipal == numItem de ese ítem.
     df['tieneSubitems'] = False
     if not df.empty:
-        principales_con_sub = set(
-            df.loc[df['esSubitem'], 'itemPrincipal'].dropna().unique()
-        )
+        principales_con_sub = set(df.loc[df['esSubitem'], 'itemPrincipal'].dropna().unique())
         mask_principales = (df['esSubitem'] == False) & df['numItem'].isin(principales_con_sub)
         df.loc[mask_principales, 'tieneSubitems'] = True
 
     return df, global_fob
 
-
-
-# --- FUNCIÓN DE EXTRACCIÓN DE LISTA BK (Mantenida) ---
-
 def extract_bk_list_from_pdf_text(full_text):
-    """
-    Extrae códigos NCM de 8 dígitos de un PDF de listado BK.
-    
-    Retorna:
-        list: Una lista de strings de NCM limpios (8 dígitos sin puntos).
-    """
-    if not full_text:
-        return []
-        
-    # Buscar todos los códigos NCM de 8 dígitos (dddd.dd.dd). 
+    if not full_text: return []
     matches = NCM_BK_PATTERN.findall(full_text)
-    
-    # Limpiar y convertir a 8 dígitos sin puntos (ej. 84139190)
-    cleaned_ncm = [
-        ncm.replace('.', '')
-        for ncm in matches
-    ]
-    
-    return cleaned_ncm
+    return [ncm.replace('.', '') for ncm in matches]
