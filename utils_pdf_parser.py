@@ -43,105 +43,71 @@ DEFAULT_COLS = [
     'itemPrincipal'
 ]
 
-# --- NUEVA FUNCIÓN: EXTRACCIÓN DE VENDEDORES (ROBUSTA V3) ---
+# --- FUNCIÓN: EXTRACCIÓN DE VENDEDORES (ROBUSTA V3) ---
 
 def extract_vendors_from_first_page(first_page_text):
-    """
-    Extrae vendedores buscando el bloque específico 'Vendedor' en la carátula.
-    Incluye lógica para separar nombres pegados y limpieza agresiva de basura.
-    """
-    if not first_page_text:
-        return []
-    
+    if not first_page_text: return []
     lines = [l.strip() for l in first_page_text.split('\n') if l.strip()]
     vendors = []
     
-    # Palabras clave de parada (Fin del bloque Vendedor) - AMPLIADA
-    stop_keywords = [
-        "VIA", "VÍA", "DOCUMENTO", "IDENTIFICADOR", "MANIFIESTO", 
-        "NOMBRE", "BANDERA", "PUERTO", "FECHA", "MARCAS", 
-        "EMBALAJE", "TOTAL", "PESO", "ADUANA", "SUBREGIMEN",
-        "VALOR", "MERCADERIA", "LIQUIDACION", "INFORMACION",
-        "NALADISA", "GATT", "AFIP", "ITEM", "POSICION", "SIM",
-        "ESTADO", "ORIGEN", "PROCEDENCIA", "DESTINO", "UNIDAD"
-    ]
-    
-    # Palabras clave de "Basura" (Líneas que NO son vendedores)
-    trash_keywords = [
-        "IMPORTE", "TASA", "DERECHOS", "PAGADO", "GARANTIZADO", 
-        "A COBRAR", "CANAL", "OFICIALIZADO", "SIM", "HOJA", 
-        "2025", "2024", "CUIT", "N°", "P/G/C", "CONCEPTOS",
-        "ESTADOS UNIDOS", "KILOGRAMO", "CANTIDAD", "ESTADISTICA",
-        "COEF.", "BASE IVA", "IMPUESTOS", "1993"
-    ]
+    stop_keywords = ["VIA", "VÍA", "DOCUMENTO", "IDENTIFICADOR", "MANIFIESTO", "NOMBRE", "BANDERA", "PUERTO", "FECHA", "MARCAS", "EMBALAJE", "TOTAL", "PESO", "ADUANA", "SUBREGIMEN", "VALOR", "MERCADERIA", "LIQUIDACION", "INFORMACION", "NALADISA", "GATT", "AFIP", "ITEM", "POSICION", "SIM", "ESTADO", "ORIGEN", "PROCEDENCIA", "DESTINO", "UNIDAD"]
+    trash_keywords = ["IMPORTE", "TASA", "DERECHOS", "PAGADO", "GARANTIZADO", "A COBRAR", "CANAL", "OFICIALIZADO", "SIM", "HOJA", "2025", "2024", "CUIT", "N°", "P/G/C", "CONCEPTOS", "ESTADOS UNIDOS", "KILOGRAMO", "CANTIDAD", "ESTADISTICA", "COEF.", "BASE IVA", "IMPUESTOS", "1993"]
 
-    # 1. ESTRATEGIA POSICIONAL (Bloque Vendedor)
     start_idx = -1
     for i, line in enumerate(lines):
         line_upper = line.upper()
-        # Buscamos el encabezado exacto "Vendedor", ignorando "VARIOS VENDEDORES"
         if "VENDEDOR" in line_upper and "VARIOS" not in line_upper:
             start_idx = i
             break
     
     if start_idx != -1:
-        # Escanear líneas hacia abajo desde "Vendedor"
-        max_lines_to_scan = 12 # Reducido para evitar leer demasiado
+        max_lines_to_scan = 12 
         scan_count = 0
-        
         for i in range(start_idx + 1, len(lines)):
             line = lines[i]
             line_upper = line.upper()
             scan_count += 1
+            if scan_count > max_lines_to_scan: break
+            if any(keyword in line_upper for keyword in stop_keywords): break
             
-            if scan_count > max_lines_to_scan:
-                break
-            
-            # Si encontramos un encabezado de parada, terminamos
-            if any(keyword in line_upper for keyword in stop_keywords):
-                break
-            
-            # --- FILTROS DE BASURA ---
             if len(line) < 3: continue
-            if re.search(r'\d{2}-\d{8}-\d', line): continue # CUIT
+            if re.search(r'\d{2}-\d{8}-\d', line): continue
             if "CUIT" in line_upper: continue
             if any(tk in line_upper for tk in trash_keywords): continue
-            # Códigos alfanuméricos sueltos (ids internos)
-            if re.match(r'^[A-Z0-9]+$', line) and len(line) < 8 and not any(c.isalpha() for c in line):
-                continue
+            if re.match(r'^[A-Z0-9]+$', line) and len(line) < 8 and not any(c.isalpha() for c in line): continue
 
-            # --- LÓGICA DE SEPARACIÓN Y EXTRACCIÓN ---
-            
-            # Caso Específico: "COSTEX TRACTOR PARTS MIRANDA CONSULTING"
-            # A veces el PDF pierde el guion o espacio grande.
             if "COSTEX" in line_upper and "MIRANDA" in line_upper:
-                 # Forzamos la separación
                  vendors.append("COSTEX TRACTOR PARTS")
                  vendors.append("MIRANDA CONSULTING")
                  continue
 
-            # Separar si hay múltiples vendedores en una línea (separados por / o -)
             current_candidates = []
             if " / " in line:
                 current_candidates = [p.strip() for p in line.split(" / ")]
-            elif " - " in line and not re.search(r'\d', line): # Guión como separador de texto
+            elif " - " in line and not re.search(r'\d', line): 
                  current_candidates = [p.strip() for p in line.split(" - ")]
             else:
                 current_candidates = [line]
             
             for cand in current_candidates:
-                if len(cand) > 2:
-                    vendors.append(cand)
+                if len(cand) > 2: vendors.append(cand)
 
-    # 2. LIMPIEZA FINAL Y FORMATEO
+    if not vendors:
+        corporate_suffixes = [" S.A.", " S.R.L.", " S.P.A.", " INC.", " LTD.", " GMBH", " LLC", " CORP."]
+        forbidden_context = ["DESPACHANTE", "IMPORTADOR", "EXPORTADOR", "AGENTE", "TRANSPORTISTA"]
+        for line in lines:
+            line_upper = line.upper()
+            if not any(s in line_upper for s in corporate_suffixes): continue
+            if any(ctx in line_upper for ctx in forbidden_context): continue
+            if any(tk in line_upper for tk in trash_keywords): continue
+            if re.search(r'\d{2}-\d{8}-\d', line): continue
+            vendors.append(line)
+
     clean_vendors = []
     for v in sorted(list(set(vendors))):
         v_up = v.upper()
-        # Filtros finales de seguridad contra basura persistente
-        if any(x in v_up for x in ["OM-1993", "PAGINA", "HOJA", "DECLARACION", "LIQUIDACION"]):
-            continue
+        if any(x in v_up for x in ["OM-1993", "PAGINA", "HOJA", "DECLARACION", "LIQUIDACION"]): continue
         if len(v) < 3: continue
-        
         clean_vendors.append(v)
 
     return clean_vendors
@@ -158,51 +124,29 @@ def extract_global_fob_total(full_text):
         return parse_number(fob_match.group(1))
     return None
 
-# --- NUEVA FUNCIÓN: EXTRACCIÓN DE CONDICIÓN DE VENTA ---
+# --- FUNCIÓN DE EXTRACCIÓN DE CONDICIÓN DE VENTA ---
 
 def extract_cond_venta(full_text):
-    """
-    Busca la condición de venta (ej. FOB, CIF, FCA, EXW) en el texto.
-    Generalmente aparece como "Cond. Venta XXX".
-    """
     if not full_text: return None
-    
-    # Patrón regex: Busca "Cond. Venta" seguido opcionalmente por espacios y captura las siguientes 3 letras mayúsculas
     match = re.search(r'Cond\.?\s*Venta\s*([A-Z]{3})', full_text, re.IGNORECASE)
-    
-    if match:
-        return match.group(1).upper()
-    
-    # Intento secundario menos estricto si el formato varía
+    if match: return match.group(1).upper()
     match_loose = re.search(r'\b(FOB|CIF|EXW|FCA|CFR|CPT|CIP|DAP|DPU|DDP|FAS)\b', full_text, re.IGNORECASE)
-    if match_loose:
-        # Verificar que no sea parte de "FOB Total"
-        start_idx = match_loose.start()
-        # Miramos un poco antes para ver el contexto si es posible, o devolvemos el hallazgo si parece razonable
-        # Para evitar falsos positivos con "FOB Total", simplemente devolvemos lo encontrado
-        # pero la lógica de app.py manejará la validación.
-        return match_loose.group(1).upper()
-        
+    if match_loose: return match_loose.group(1).upper()
     return None
 
 # --- FUNCIÓN PRINCIPAL DE EXTRACCIÓN DE DATOS ---
 
 def extract_data_from_pdf_text(full_text):
-    """
-    Retorna: DataFrame, global_fob, cond_venta
-    """
     if not full_text:
         return pd.DataFrame(columns=DEFAULT_COLS), None, None
 
     full_text = full_text.replace('\r\n', '\n')
     
-    # a) Despacho
     despacho = ""
     despacho_match = DESPACHO_PATTERN.search(full_text)
     if despacho_match:
         despacho = "".join(despacho_match.groups()) 
 
-    # b) Moneda Global
     moneda_global = "USD"
     moneda_match = re.search(r'FOB Total Divisa[\s\S]*?\b(USD|DOL|EUR|ARS)\b', full_text)
     if not moneda_match:
@@ -210,10 +154,7 @@ def extract_data_from_pdf_text(full_text):
     if moneda_match:
         moneda_global = moneda_match.group(1)
 
-    # c) FOB Global
     global_fob = extract_global_fob_total(full_text)
-
-    # d) Condición de Venta (NUEVO)
     cond_venta = extract_cond_venta(full_text)
     
     # 2. --- LOCALIZAR BLOQUES ---
@@ -251,10 +192,27 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
+        # 3.3) PROVEEDOR (Lógica Mejorada para ítems simples)
         proveedor = None
+        
+        # Estrategia 1: Búsqueda estándar AA(MARCA)
+        # Usamos search multilínea flexible
         marca_match = re.search(r'AA\s*\(\s*([^)]+?)\s*\)', block)
+        
+        # Estrategia 2: Búsqueda laxa A A (MARCA) (por errores de OCR)
+        if not marca_match:
+             marca_match = re.search(r'A\s*A\s*\(\s*([^)]+?)\s*\)', block)
+
+        # Estrategia 3: Búsqueda explícita de la palabra "MARCA:"
+        if not marca_match:
+             # Busca "MARCA : XXX" o "MARCA XXX"
+             marca_match = re.search(r'\bMARCA\s*:?\s*([A-Z0-9\.\-\s]{2,30})(?:$|\n|;)', block, re.IGNORECASE)
+
         if marca_match:
-            proveedor = marca_match.group(1).strip()
+            cand = marca_match.group(1).strip()
+            # Filtros básicos para no traer basura
+            if len(cand) > 1 and "CODIGO" not in cand.upper() and "MODELO" not in cand.upper():
+                proveedor = cand
 
         monto_fob = None
         idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)

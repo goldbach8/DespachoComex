@@ -62,6 +62,16 @@ def load_css():
             color: #006600;
             border: 1px solid #006600;
         }
+        
+        /* Estilo para validación */
+        .validation-warning {
+            background-color: #fff3cd;
+            color: #856404;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #ffeeba;
+            margin-bottom: 15px;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -110,7 +120,7 @@ def reset_app():
     st.session_state.proveedor_mapping = {}
     st.session_state.referencia = ""
     st.session_state.global_fob_total = None
-    st.session_state.cond_venta = None # Nuevo estado
+    st.session_state.cond_venta = None
     st.session_state.df_validation_fob = pd.DataFrame()
     st.session_state.df_results_grouped = pd.DataFrame()
     st.session_state.detected_vendors = [] 
@@ -173,14 +183,11 @@ if st.session_state.app_step == 1:
                     reader = PdfReader(sim_file)
                     st.session_state.pdf_reader = reader
                     
-                    # 1. Extraer texto completo
                     full_text_pages = [p.extract_text() for p in reader.pages]
                     full_text = "\n".join(full_text_pages)
                     
-                    # 2. Extraer datos de ítems y metadatos (Ahora devuelve 3 valores)
                     df_items, global_fob, cond_venta = extract_data_from_pdf_text(full_text)
                     
-                    # 3. Extraer Vendedores de la Página 1
                     first_page_text = full_text_pages[0] if full_text_pages else ""
                     detected_vendors = extract_vendors_from_first_page(first_page_text)
                     
@@ -189,7 +196,7 @@ if st.session_state.app_step == 1:
                     else:
                         st.session_state.data_items = df_items
                         st.session_state.global_fob_total = global_fob
-                        st.session_state.cond_venta = cond_venta # Guardamos condición venta
+                        st.session_state.cond_venta = cond_venta
                         st.session_state.pdf_data_loaded = True
                         st.session_state.detected_vendors = detected_vendors 
                         
@@ -210,32 +217,83 @@ elif st.session_state.app_step == 2:
         st.warning("Sin datos."); st.stop()
     
     df_work = st.session_state.data_items.copy()
+    
+    # Filtrar solo items relevantes
     mask_relevant = (df_work['esSubitem'] == True) | ((df_work['esSubitem'] == False) & (df_work['tieneSubitems'] == False))
-    mask_error = mask_relevant & ( (df_work['montoFob'].isna()) | (df_work['proveedor'].isna()) | (df_work['proveedor'] == '') )
+    
+    # Identificar errores
+    mask_fob_error = mask_relevant & df_work['montoFob'].isna()
+    mask_brand_error = mask_relevant & (df_work['proveedor'].isna() | (df_work['proveedor'] == ''))
+    mask_error = mask_fob_error | mask_brand_error
+    
     df_errors = df_work[mask_error].copy()
     
     if not df_errors.empty:
-        st.warning(f"⚠️ Se detectaron **{len(df_errors)}** registros incompletos. Complétalos antes de mapear.")
+        # Calcular contadores
+        count_fob = df_errors['montoFob'].isna().sum()
+        count_brand = (df_errors['proveedor'].isna() | (df_errors['proveedor'] == '')).sum()
+        
+        st.markdown(
+            f"""
+            <div class="validation-warning">
+                <h4>⚠️ Atención Requerida</h4>
+                <p>Se encontraron <strong>{len(df_errors)}</strong> registros incompletos que necesitan corrección manual:</p>
+                <ul>
+                    <li><strong>{count_fob}</strong> ítems sin valor FOB (Precio).</li>
+                    <li><strong>{count_brand}</strong> ítems sin Marca/Proveedor.</li>
+                </ul>
+                <p>Por favor, completa los campos resaltados en la tabla inferior.</p>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+        
+        # Preparar dataframe para edición
         df_to_edit = df_errors[['numItem', 'posicion', 'montoFob', 'proveedor']].copy()
+        
+        # Agregar columna visual de estado para guiar al usuario
+        # (Aunque data_editor no muestra colores condicionales en celdas, podemos usar esto)
+        
         edited_df = st.data_editor(
             df_to_edit,
             column_config={
-                "montoFob": st.column_config.NumberColumn("Monto FOB", required=True, min_value=0.0, format="%.2f"),
-                "proveedor": st.column_config.TextColumn("Marca/Proveedor (Crudo)", required=True),
-                "numItem": st.column_config.TextColumn("Item", disabled=True),
-                "posicion": st.column_config.TextColumn("Posición", disabled=True),
+                "numItem": st.column_config.TextColumn("Item", disabled=True, help="Número de ítem en el despacho"),
+                "posicion": st.column_config.TextColumn("Posición NCM", disabled=True),
+                "montoFob": st.column_config.NumberColumn(
+                    "Monto FOB ✏️", 
+                    required=True, 
+                    min_value=0.0, 
+                    format="%.2f",
+                    help="Este campo es obligatorio. Ingrese el valor FOB."
+                ),
+                "proveedor": st.column_config.TextColumn(
+                    "Marca/Proveedor ✏️", 
+                    required=True,
+                    help="Este campo es obligatorio. Ingrese la marca."
+                ),
             },
             use_container_width=True,
-            key="editor_validation_raw"
+            key="editor_validation_raw",
+            hide_index=True
         )
+        
         col_v1, col_v2 = st.columns([1, 1])
         if col_v1.button("⬅️ Volver a Carga"):
             reset_app(); st.rerun()
+            
+        # Validación antes de avanzar
         if col_v2.button("✅ Guardar Correcciones y Continuar", type="primary"):
-            for idx, row in edited_df.iterrows():
-                st.session_state.data_items.at[idx, 'montoFob'] = row['montoFob']
-                st.session_state.data_items.at[idx, 'proveedor'] = str(row['proveedor']).strip().upper()
-            next_step(3); st.rerun()
+            # Verificar si aún quedan nulos en lo editado
+            still_missing_fob = edited_df['montoFob'].isna().any()
+            still_missing_brand = (edited_df['proveedor'].isna() | (edited_df['proveedor'] == '')).any()
+            
+            if still_missing_fob or still_missing_brand:
+                st.error("❌ Aún hay campos vacíos en la tabla. Por favor complétalos todos para continuar.")
+            else:
+                for idx, row in edited_df.iterrows():
+                    st.session_state.data_items.at[idx, 'montoFob'] = row['montoFob']
+                    st.session_state.data_items.at[idx, 'proveedor'] = str(row['proveedor']).strip().upper()
+                next_step(3); st.rerun()
     else:
         st.success("✅ Todos los datos obligatorios (FOB y Marca) están completos.")
         if st.button("Continuar al Mapeo", type="primary"):
@@ -247,21 +305,14 @@ elif st.session_state.app_step == 2:
 elif st.session_state.app_step == 3:
     st.markdown("### 🏷️ Mapeo de Proveedores")
     
-    # Marcas únicas de los ítems
     unique_marcas = sorted([m for m in st.session_state.data_items['proveedor'].dropna().unique() if m])
     new_mapping = {}
     
-    # --- CONSTRUCCIÓN INTELIGENTE DE OPCIONES ---
     detected = st.session_state.get('detected_vendors', [])
     known = st.session_state.known_suppliers
-    
-    # Eliminar de 'known' los que ya están en 'detected' para no duplicar
     known_filtered = sorted([k for k in known if k not in detected])
-    
-    # Lista final priorizada: [Opciones Especiales] + [DETECTADOS EN PDF] + [Sep] + [HISTÓRICOS]
     options = ['-- Ignorar/Original --'] + detected + ['--- Otros Históricos ---'] + known_filtered
     
-    # Mensaje informativo sobre detección
     if detected:
         st.info(f"🏢 Se identificaron los siguientes proveedores en el despacho: **{', '.join(detected)}**")
     else:
@@ -275,8 +326,6 @@ elif st.session_state.app_step == 3:
         cols = st.columns(3)
         for i, marca in enumerate(unique_marcas):
             col = cols[i % 3]
-            
-            # Pre-selección inteligente:
             default_idx = 0
             if marca in options:
                 default_idx = options.index(marca)
@@ -302,7 +351,6 @@ elif st.session_state.app_step == 3:
             st.session_state.referencia = ref_input.upper()
             st.session_state.proveedor_mapping = new_mapping
             
-            # Guardar nuevos proveedores en histórico
             new_sups = {v for v in new_mapping.values() if v and v not in options}
             if new_sups:
                 st.session_state.known_suppliers = sorted(list(set(st.session_state.known_suppliers) | new_sups))
@@ -327,12 +375,11 @@ elif st.session_state.app_step == 4:
 
         # Métricas
         global_fob_pdf = st.session_state.get('global_fob_total')
-        cond_venta = st.session_state.get('cond_venta', 'DESC') # Valor por defecto si es None
+        cond_venta = st.session_state.get('cond_venta', 'DESC') 
         
         total_grouped_fob = df_final['Monto Total de la Posición Arancelaria'].sum()
         moneda = df_final['Moneda'].iloc[0] if not df_final.empty else "USD"
         
-        # FILA 1 DE MÉTRICAS: FOB y COMPARACIÓN
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         col_m1.metric("Suma FOB Items", f"{total_grouped_fob:,.2f} {moneda}")
         
@@ -355,11 +402,12 @@ elif st.session_state.app_step == 4:
         
         # MÉTRICA DE CONDICIÓN DE VENTA CON ALERTA VISUAL
         with col_m4:
-            if cond_venta == 'FOB':
+            cond_str = str(cond_venta).strip().upper() if cond_venta else 'N/A'
+            if cond_str == 'FOB':
                 st.markdown(
                     f"""
                     <div class="metric-alert-box alert-green">
-                        Cond. Venta<br><span style="font-size: 1.4rem;">{cond_venta}</span>
+                        Cond. Venta<br><span style="font-size: 1.4rem;">{cond_str}</span>
                     </div>
                     """, unsafe_allow_html=True
                 )
@@ -367,7 +415,7 @@ elif st.session_state.app_step == 4:
                 st.markdown(
                     f"""
                     <div class="metric-alert-box alert-red">
-                        Cond. Venta<br><span style="font-size: 1.4rem;">{cond_venta if cond_venta else 'N/A'}</span>
+                        Cond. Venta<br><span style="font-size: 1.4rem;">{cond_str}</span>
                     </div>
                     """, unsafe_allow_html=True
                 )
