@@ -422,7 +422,7 @@ elif st.session_state.app_step == 4:
         
         st.markdown("---")
         st.subheader("📋 Resumen por Proveedor y % BK")
-        st.dataframe(df_summary.style.format({"FOB Total": "{:,.2f}", "% BK": "{:.1f}%"}).background_gradient(subset=["% BK"], cmap="Greens"), use_container_width=True, hide_index=True)
+        st.dataframe(df_summary.style.format({"FOB Total": "{:,.2f}", "% BK": "{:.1f}%"}), use_container_width=True, hide_index=True)
 
         st.subheader("📑 Detalle Agrupado por Posición")
         st.dataframe(df_final, use_container_width=True, hide_index=True)
