@@ -9,22 +9,14 @@ logger = logging.getLogger(__name__)
 # --- FUNCIÓN AUXILIAR ---
 
 def parse_number(num_str):
-    """
-    Convierte string de formato SIM ("1.234,56") a float Python (1234.56).
-    """
-    if not num_str:
-        return None
-    s = num_str.replace('.', '')
-    s = s.replace(',', '.')
-    try:
-        n = float(s)
-        return n
-    except ValueError:
-        return None
+    """Convierte string de formato SIM ("1.234,56") a float Python."""
+    if not num_str: return None
+    s = num_str.replace('.', '').replace(',', '.')
+    try: return float(s)
+    except ValueError: return None
 
 # --- CONSTANTES DE REGEX ---
 
-NCM_BK_PATTERN = re.compile(r'(\d{4}\.\d{2}\.\d{2})')
 DESPACHO_PATTERN = re.compile(r'(\d{2})\s+(\d{3})\s+([A-Z0-9]{4})\s+(\d{6})\s+([A-Z])')
 ITEM_HEADER_PATTERN = re.compile(r'N.? Item', re.IGNORECASE)
 POSICION_PATTERN = re.compile(r'(\d{4}\.\d{2}\.\d{2}\.\d{3}[A-Z])')
@@ -37,109 +29,60 @@ SUBITEM_DETAILED_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-DEFAULT_COLS = [
-    'despacho', 'posicion', 'moneda', 'montoFob', 
-    'proveedor', 'esSubitem', 'tieneSubitems', 'numItem', 
-    'itemPrincipal'
-]
+DEFAULT_COLS = ['despacho', 'posicion', 'moneda', 'montoFob', 'proveedor', 'esSubitem', 'tieneSubitems', 'numItem', 'itemPrincipal']
 
-# --- FUNCIÓN: EXTRACCIÓN DE VENDEDORES (ROBUSTA V5) ---
+# --- FUNCIÓN: EXTRACCIÓN DE VENDEDORES (ROBUSTA V6) ---
 
 def extract_vendors_from_first_page(first_page_text):
-    """
-    Extrae vendedores buscando el bloque específico 'Vendedor' en la carátula.
-    Lógica V5: Ventana de lectura estricta y lista negra reforzada.
-    """
     if not first_page_text: return []
-    
     lines = [l.strip() for l in first_page_text.split('\n') if l.strip()]
     vendors = []
     
-    # Palabras clave que indican el FIN del bloque de vendedores (Keywords de otros campos)
-    stop_keywords = [
-        "VIA", "VÍA", "DOCUMENTO", "IDENTIFICADOR", "MANIFIESTO", 
-        "NOMBRE", "BANDERA", "PUERTO", "FECHA", "MARCAS", 
-        "EMBALAJE", "TOTAL", "PESO", "ADUANA", "SUBREGIMEN",
-        "VALOR", "MERCADERIA", "LIQUIDACION", "INFORMACION",
-        "NALADISA", "GATT", "AFIP", "ITEM", "POSICION", "SIM",
-        "ESTADO", "ORIGEN", "PROCEDENCIA", "DESTINO", "UNIDAD"
-    ]
-    
-    # Palabras clave BASURA (Ignorar línea si contiene esto)
-    trash_keywords = [
-        "IMPORTE", "TASA", "DERECHOS", "PAGADO", "GARANTIZADO", 
-        "A COBRAR", "CANAL", "OFICIALIZADO", "SIM", "HOJA", 
-        "2025", "2024", "CUIT", "N°", "P/G/C", "CONCEPTOS",
-        "ESTADOS", "UNIDOS", "KILOGRAMO", "CANTIDAD", "ESTADISTICA", # ESTADOS y UNIDOS separados para mayor seguridad
-        "COEF.", "BASE IVA", "IMPUESTOS", "1993", "OM-1993",
-        "FORMULARIO", "PAGINA", "DECLARACION"
-    ]
+    stop_keywords = ["VIA", "VÍA", "DOCUMENTO", "IDENTIFICADOR", "MANIFIESTO", "NOMBRE", "BANDERA", "PUERTO", "FECHA", "MARCAS", "EMBALAJE", "TOTAL", "PESO", "ADUANA", "SUBREGIMEN", "VALOR", "MERCADERIA", "LIQUIDACION", "INFORMACION", "NALADISA", "GATT", "AFIP", "ITEM", "POSICION", "SIM", "ESTADO", "ORIGEN", "PROCEDENCIA", "DESTINO", "UNIDAD"]
+    trash_keywords = ["IMPORTE", "TASA", "DERECHOS", "PAGADO", "GARANTIZADO", "A COBRAR", "CANAL", "OFICIALIZADO", "SIM", "HOJA", "2025", "2026", "2024", "CUIT", "N°", "P/G/C", "CONCEPTOS", "KILOGRAMO", "CANTIDAD", "ESTADISTICA", "COEF.", "BASE IVA", "IMPUESTOS", "1993", "OM-1993", "FORMULARIO", "PAGINA", "DECLARACION"]
 
     start_idx = -1
     for i, line in enumerate(lines):
         line_upper = line.upper()
-        # Buscamos el encabezado exacto "Vendedor", ignorando "VARIOS VENDEDORES"
         if "VENDEDOR" in line_upper and "VARIOS" not in line_upper:
             start_idx = i
             break
     
     if start_idx != -1:
-        # Ventana estricta: Leer máximo 6 líneas hacia abajo desde "Vendedor"
-        max_lines_to_scan = 6 
+        max_lines_to_scan = 8
         scan_count = 0
-        
         for i in range(start_idx + 1, len(lines)):
             line = lines[i]
             line_upper = line.upper()
             scan_count += 1
-            
             if scan_count > max_lines_to_scan: break
-            
-            # Si encontramos una palabra de parada, dejamos de buscar
             if any(keyword in line_upper for keyword in stop_keywords): break
-            
-            # --- FILTROS DE BASURA ---
             if len(line) < 3: continue
-            if re.search(r'\d{2}-\d{8}-\d', line): continue # Ignorar CUITs
+            if re.search(r'\d{2}-\d{8}-\d', line): continue
             if "CUIT" in line_upper: continue
-            # Si contiene ALGUNA palabra basura, ignorar la línea completa
             if any(tk in line_upper for tk in trash_keywords): continue
-            
-            # Ignorar códigos alfanuméricos que parecen IDs (ej: L29416)
-            if re.match(r'^[A-Z0-9]+$', line) and len(line) < 10 and not any(c.isalpha() for c in line): continue
+            if re.match(r'^[A-Z0-9]+$', line) and len(line) < 8 and not any(c.isalpha() for c in line): continue
 
-            # --- LÓGICA DE SEPARACIÓN ---
-            # Divide por guion (-) o barra (/) con o sin espacios alrededor
-            parts = re.split(r'\s*[-/]\s*', line)
-            
+            # Separar por guiones o barras, incluso si no hay espacios (Ej: COSTEX-MIRANDA)
+            parts = re.split(r'[-/]', line)
             for part in parts:
                 clean_part = part.strip()
-                if len(clean_part) > 2: # Ignorar fragmentos muy cortos
+                if len(clean_part) > 2 and not any(tk in clean_part.upper() for tk in trash_keywords):
                     vendors.append(clean_part)
 
-    # Limpieza final: Eliminar duplicados y cualquier basura que haya sobrevivido
     clean_vendors = []
     for v in sorted(list(set(vendors))):
-        v_up = v.upper()
-        if any(x in v_up for x in ["PAGINA", "HOJA", "DECLARACION", "LIQUIDACION", "ESTADOS UNIDOS"]): continue
         if len(v) < 3: continue
         clean_vendors.append(v)
-
     return clean_vendors
 
-# --- FUNCIÓN DE EXTRACCIÓN DE FOB GLOBAL ---
+# --- EXTRACCION DATOS GLOBALES ---
 
 def extract_global_fob_total(full_text):
     if not full_text: return None
-    fob_match = re.search(
-        r'FOB\s*Total\s*Divisa[\s\S]*?(' + FOB_AMOUNT_PATTERN.pattern + r')\b', 
-        full_text, re.IGNORECASE
-    )
-    if fob_match:
-        return parse_number(fob_match.group(1))
+    fob_match = re.search(r'FOB\s*Total\s*Divisa[\s\S]*?(' + FOB_AMOUNT_PATTERN.pattern + r')\b', full_text, re.IGNORECASE)
+    if fob_match: return parse_number(fob_match.group(1))
     return None
-
-# --- FUNCIÓN DE EXTRACCIÓN DE CONDICIÓN DE VENTA ---
 
 def extract_cond_venta(full_text):
     if not full_text: return None
@@ -149,25 +92,43 @@ def extract_cond_venta(full_text):
     if match_loose: return match_loose.group(1).upper()
     return None
 
-# --- FUNCIÓN PRINCIPAL DE EXTRACCIÓN DE DATOS ---
+# --- VALIDACIÓN DE MARCA ---
+
+def is_valid_brand(candidate):
+    """Verifica si el texto extraído es una marca válida o basura del PDF."""
+    if not candidate or len(candidate) < 2: return False
+    
+    cand_up = candidate.upper().strip()
+    
+    # Lista Negra Estricta
+    blacklist = [
+        "ESTADOS UNIDOS", "ESTADOS", "UNIDOS", "CHINA", "ITALIA", "ALEMANIA", 
+        "BRASIL", "INDIA", "JAPON", "KOREA", "COREA", "TAIWAN", "VIETNAM",
+        "SIN MARCA", "MARCAS Y NUMEROS", "MARCAS Y NÚMEROS", "MARCA",
+        "CODIGO", "MODELO", "CANTIDAD", "UNIDAD", "KILOGRAMO", "LITRO",
+        "PRESENTACION", "NINGUNO", "NO VALIDA", "NO_VALIDA"
+    ]
+    
+    if any(bad == cand_up for bad in blacklist): return False # Coincidencia exacta
+    if any(bad in cand_up for bad in ["ESTADOS UNIDOS", "MARCAS Y"]): return False # Coincidencia parcial peligrosa
+    
+    return True
+
+# --- FUNCIÓN PRINCIPAL ---
 
 def extract_data_from_pdf_text(full_text):
-    if not full_text:
-        return pd.DataFrame(columns=DEFAULT_COLS), None, None
+    if not full_text: return pd.DataFrame(columns=DEFAULT_COLS), None, None
 
     full_text = full_text.replace('\r\n', '\n')
     
     despacho = ""
-    despacho_match = DESPACHO_PATTERN.search(full_text)
-    if despacho_match:
-        despacho = "".join(despacho_match.groups()) 
+    m_desp = DESPACHO_PATTERN.search(full_text)
+    if m_desp: despacho = "".join(m_desp.groups()) 
 
-    moneda_global = "USD"
-    moneda_match = re.search(r'FOB Total Divisa[\s\S]*?\b(USD|DOL|EUR|ARS)\b', full_text)
-    if not moneda_match:
-        moneda_match = re.search(r'\b(USD|DOL|EUR|ARS)\b', full_text)
-    if moneda_match:
-        moneda_global = moneda_match.group(1)
+    moneda = "USD"
+    m_mon = re.search(r'FOB Total Divisa[\s\S]*?\b(USD|DOL|EUR|ARS)\b', full_text)
+    if not m_mon: m_mon = re.search(r'\b(USD|DOL|EUR|ARS)\b', full_text)
+    if m_mon: moneda = m_mon.group(1)
 
     global_fob = extract_global_fob_total(full_text)
     cond_venta = extract_cond_venta(full_text)
@@ -175,7 +136,6 @@ def extract_data_from_pdf_text(full_text):
     starts = [m.start() for m in ITEM_HEADER_PATTERN.finditer(full_text)]
     data = []
     
-    # 3. --- ÍTEMS PRINCIPALES ---
     for i, start in enumerate(starts):
         end = starts[i + 1] if i + 1 < len(starts) else len(full_text)
         block = full_text[start:end]
@@ -206,55 +166,52 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
-        # 3.3) PROVEEDOR - LÓGICA CORREGIDA V6
+        # --- EXTRACCIÓN DE MARCA (Secuencia de Estrategias) ---
         proveedor = None
         
-        # PATRÓN MAESTRO: AA (...)
-        # Cubre:
-        # - AA(MARCA)
-        # - AA (MARCA)
-        # - A A (MARCA)
-        # - AA(MARCA) = MARCA
-        # - AA(MARCA) MARCA
-        # Captura el contenido de los paréntesis
+        # Lista de regex a probar en orden
+        regex_strategies = [
+            # 1. AA(MARCA) o A A(MARCA) - Estándar SIM
+            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)',
+            
+            # 2. Inversa: (...) = MARCA o (...) MARCA
+            r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
+            
+            # 3. Solicitud Usuario (Estrategia 4 Anterior): Texto plano "MARCA: XXX"
+            # NOTA: Esto es peligroso, por eso aplicaremos validación estricta abajo.
+            r'\bMARCA\s*:?\s*([A-Z0-9\.\-\s]{2,30})(?:$|\n|;)',
+            
+            # 4. Multilínea: AA [salto] (MARCA)
+            r'(?:AA|A\s*A)\s*\n\s*\(\s*([^)]+?)\s*\)'
+        ]
         
-        # 1. Búsqueda directa de AA seguido de paréntesis (ignorando espacios y saltos)
-        # re.DOTALL permite que el . coincida con saltos de linea por si el paréntesis cierra abajo
-        marca_match = re.search(r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)', block, re.IGNORECASE | re.DOTALL)
-        
-        # 2. Si falla, intentar búsqueda inversa: (...) = MARCA
-        if not marca_match:
-            marca_match = re.search(r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA', block, re.IGNORECASE)
-
-        if marca_match:
-            cand = marca_match.group(1).strip().upper()
+        for pattern in regex_strategies:
+            # Buscamos TODAS las coincidencias en el bloque, no solo la primera
+            # Esto ayuda si la primera coincidencia es basura (ej: "SIN MARCA" en un encabezado)
+            matches = re.finditer(pattern, block, re.IGNORECASE | re.DOTALL)
             
-            # --- FILTROS DE SEGURIDAD PARA MARCA ---
+            for match in matches:
+                candidate = match.group(1).strip()
+                
+                # Limpieza de espacios internos (C A T -> CAT)
+                if re.match(r'^[A-Z\s]+$', candidate) and " " in candidate:
+                     compact = candidate.replace(" ", "")
+                     if len(candidate) > len(compact) * 1.5: candidate = compact
+                
+                # VALIDACIÓN ESTRICTA
+                if is_valid_brand(candidate):
+                    proveedor = candidate
+                    break # Encontramos una marca válida con esta estrategia
             
-            # Lista negra estricta para evitar falsos positivos como "ESTADOS UNIDOS"
-            # que pueden aparecer si la regex captura algo indebido o si el bloque incluye encabezados de página.
-            blacklisted_brands = [
-                "ESTADOS UNIDOS", "ESTADOS", "UNIDOS", "CHINA", "ITALIA", "ALEMANIA", 
-                "BRASIL", "INDIA", "JAPON", "KOREA", "COREA", "TAIWAN", "VIETNAM",
-                "SIN MARCA", "MARCAS Y NUMEROS", "MARCAS Y NÚMEROS",
-                "CODIGO", "MODELO", "CANTIDAD", "UNIDAD"
-            ]
-            
-            is_valid = True
-            if len(cand) < 2: is_valid = False
-            if any(bad in cand for bad in blacklisted_brands): is_valid = False
-            
-            if is_valid:
-                proveedor = cand
+            if proveedor: break # Ya tenemos proveedor, no probar más estrategias
 
         monto_fob = None
         idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)
-        numeros_str = []
         if idx_unidad != -1:
+            numeros_str = []
             for li in range(idx_unidad, len(lines)):
                 nums_line = FOB_AMOUNT_PATTERN.findall(lines[li])
-                if nums_line:
-                    numeros_str.extend(nums_line)
+                if nums_line: numeros_str.extend(nums_line)
                 if len(numeros_str) >= 4: break
             
             if len(numeros_str) >= 2: monto_fob = parse_number(numeros_str[1])
@@ -265,7 +222,7 @@ def extract_data_from_pdf_text(full_text):
         data.append({
             'despacho': despacho,
             'posicion': posicion,
-            'moneda': moneda_global,
+            'moneda': moneda,
             'montoFob': monto_fob,
             'proveedor': proveedor,
             'esSubitem': False,
@@ -283,12 +240,13 @@ def extract_data_from_pdf_text(full_text):
         proveedor_sub_str = sm.group(5).strip()
 
         monto_sub_fob = parse_number(fob_str)
-        proveedor_sub = proveedor_sub_str if proveedor_sub_str else None
+        # Validar también el proveedor del subitem por si acaso
+        proveedor_sub = proveedor_sub_str if is_valid_brand(proveedor_sub_str) else None
         
         data.append({
             'despacho': despacho,
             'posicion': posicion_sub,
-            'moneda': moneda_global,
+            'moneda': moneda,
             'montoFob': monto_sub_fob,
             'proveedor': proveedor_sub,
             'esSubitem': True,
@@ -297,9 +255,7 @@ def extract_data_from_pdf_text(full_text):
             'itemPrincipal': nro_item_principal,
         })
     
-    # 5. --- SALIDA ---
-    if not data:
-        return pd.DataFrame(columns=DEFAULT_COLS), global_fob, cond_venta
+    if not data: return pd.DataFrame(columns=DEFAULT_COLS), global_fob, cond_venta
 
     df = pd.DataFrame(data)
     df['tieneSubitems'] = False
