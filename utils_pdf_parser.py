@@ -157,7 +157,8 @@ def extract_data_from_pdf_text(full_text):
                 num_item = m_num.group(1)
                 idx_num = idx
                 break
-
+        if num_item == 17:
+            print(block)            
         # Buscar posición arancelaria
         posicion = None
         if idx_num is not None:
