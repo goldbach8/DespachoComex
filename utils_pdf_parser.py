@@ -43,70 +43,85 @@ DEFAULT_COLS = [
     'itemPrincipal'
 ]
 
-# --- FUNCIÓN: EXTRACCIÓN DE VENDEDORES (ROBUSTA V3) ---
+# --- FUNCIÓN: EXTRACCIÓN DE VENDEDORES (ROBUSTA V5) ---
 
 def extract_vendors_from_first_page(first_page_text):
+    """
+    Extrae vendedores buscando el bloque específico 'Vendedor' en la carátula.
+    Lógica V5: Ventana de lectura estricta y lista negra reforzada.
+    """
     if not first_page_text: return []
+    
     lines = [l.strip() for l in first_page_text.split('\n') if l.strip()]
     vendors = []
     
-    stop_keywords = ["VIA", "VÍA", "DOCUMENTO", "IDENTIFICADOR", "MANIFIESTO", "NOMBRE", "BANDERA", "PUERTO", "FECHA", "MARCAS", "EMBALAJE", "TOTAL", "PESO", "ADUANA", "SUBREGIMEN", "VALOR", "MERCADERIA", "LIQUIDACION", "INFORMACION", "NALADISA", "GATT", "AFIP", "ITEM", "POSICION", "SIM", "ESTADO", "ORIGEN", "PROCEDENCIA", "DESTINO", "UNIDAD"]
-    trash_keywords = ["IMPORTE", "TASA", "DERECHOS", "PAGADO", "GARANTIZADO", "A COBRAR", "CANAL", "OFICIALIZADO", "SIM", "HOJA", "2025", "2024", "CUIT", "N°", "P/G/C", "CONCEPTOS", "ESTADOS UNIDOS", "KILOGRAMO", "CANTIDAD", "ESTADISTICA", "COEF.", "BASE IVA", "IMPUESTOS", "1993"]
+    # Palabras clave que indican el FIN del bloque de vendedores (Keywords de otros campos)
+    stop_keywords = [
+        "VIA", "VÍA", "DOCUMENTO", "IDENTIFICADOR", "MANIFIESTO", 
+        "NOMBRE", "BANDERA", "PUERTO", "FECHA", "MARCAS", 
+        "EMBALAJE", "TOTAL", "PESO", "ADUANA", "SUBREGIMEN",
+        "VALOR", "MERCADERIA", "LIQUIDACION", "INFORMACION",
+        "NALADISA", "GATT", "AFIP", "ITEM", "POSICION", "SIM",
+        "ESTADO", "ORIGEN", "PROCEDENCIA", "DESTINO", "UNIDAD"
+    ]
+    
+    # Palabras clave BASURA (Ignorar línea si contiene esto)
+    trash_keywords = [
+        "IMPORTE", "TASA", "DERECHOS", "PAGADO", "GARANTIZADO", 
+        "A COBRAR", "CANAL", "OFICIALIZADO", "SIM", "HOJA", 
+        "2025", "2024", "CUIT", "N°", "P/G/C", "CONCEPTOS",
+        "ESTADOS", "UNIDOS", "KILOGRAMO", "CANTIDAD", "ESTADISTICA", # ESTADOS y UNIDOS separados para mayor seguridad
+        "COEF.", "BASE IVA", "IMPUESTOS", "1993", "OM-1993",
+        "FORMULARIO", "PAGINA", "DECLARACION"
+    ]
 
     start_idx = -1
     for i, line in enumerate(lines):
         line_upper = line.upper()
+        # Buscamos el encabezado exacto "Vendedor", ignorando "VARIOS VENDEDORES"
         if "VENDEDOR" in line_upper and "VARIOS" not in line_upper:
             start_idx = i
             break
     
     if start_idx != -1:
-        max_lines_to_scan = 12 
+        # Ventana estricta: Leer máximo 6 líneas hacia abajo desde "Vendedor"
+        max_lines_to_scan = 6 
         scan_count = 0
+        
         for i in range(start_idx + 1, len(lines)):
             line = lines[i]
             line_upper = line.upper()
             scan_count += 1
+            
             if scan_count > max_lines_to_scan: break
+            
+            # Si encontramos una palabra de parada, dejamos de buscar
             if any(keyword in line_upper for keyword in stop_keywords): break
             
+            # --- FILTROS DE BASURA ---
             if len(line) < 3: continue
-            if re.search(r'\d{2}-\d{8}-\d', line): continue
+            if re.search(r'\d{2}-\d{8}-\d', line): continue # Ignorar CUITs
             if "CUIT" in line_upper: continue
+            # Si contiene ALGUNA palabra basura, ignorar la línea completa
             if any(tk in line_upper for tk in trash_keywords): continue
-            if re.match(r'^[A-Z0-9]+$', line) and len(line) < 8 and not any(c.isalpha() for c in line): continue
-
-            if "COSTEX" in line_upper and "MIRANDA" in line_upper:
-                 vendors.append("COSTEX TRACTOR PARTS")
-                 vendors.append("MIRANDA CONSULTING")
-                 continue
-
-            current_candidates = []
-            if " / " in line:
-                current_candidates = [p.strip() for p in line.split(" / ")]
-            elif " - " in line and not re.search(r'\d', line): 
-                 current_candidates = [p.strip() for p in line.split(" - ")]
-            else:
-                current_candidates = [line]
             
-            for cand in current_candidates:
-                if len(cand) > 2: vendors.append(cand)
+            # Ignorar códigos alfanuméricos que parecen IDs (ej: L29416)
+            if re.match(r'^[A-Z0-9]+$', line) and len(line) < 10 and not any(c.isalpha() for c in line): continue
 
-    if not vendors:
-        corporate_suffixes = [" S.A.", " S.R.L.", " S.P.A.", " INC.", " LTD.", " GMBH", " LLC", " CORP."]
-        forbidden_context = ["DESPACHANTE", "IMPORTADOR", "EXPORTADOR", "AGENTE", "TRANSPORTISTA"]
-        for line in lines:
-            line_upper = line.upper()
-            if not any(s in line_upper for s in corporate_suffixes): continue
-            if any(ctx in line_upper for ctx in forbidden_context): continue
-            if any(tk in line_upper for tk in trash_keywords): continue
-            if re.search(r'\d{2}-\d{8}-\d', line): continue
-            vendors.append(line)
+            # --- LÓGICA DE SEPARACIÓN ---
+            # Divide por guion (-) o barra (/) con o sin espacios alrededor
+            parts = re.split(r'\s*[-/]\s*', line)
+            
+            for part in parts:
+                clean_part = part.strip()
+                if len(clean_part) > 2: # Ignorar fragmentos muy cortos
+                    vendors.append(clean_part)
 
+    # Limpieza final: Eliminar duplicados y cualquier basura que haya sobrevivido
     clean_vendors = []
     for v in sorted(list(set(vendors))):
         v_up = v.upper()
-        if any(x in v_up for x in ["OM-1993", "PAGINA", "HOJA", "DECLARACION", "LIQUIDACION"]): continue
+        if any(x in v_up for x in ["PAGINA", "HOJA", "DECLARACION", "LIQUIDACION", "ESTADOS UNIDOS"]): continue
         if len(v) < 3: continue
         clean_vendors.append(v)
 
@@ -191,34 +206,45 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
-        # 3.3) PROVEEDOR - ESTRATEGIAS REORDENADAS
-        # Invertimos el orden para priorizar la estructura más fiable (el sufijo MARCA)
-        # sobre el prefijo AA(...) que puede capturar basura en la descripción.
-        
+        # 3.3) PROVEEDOR - LÓGICA CORREGIDA V6
         proveedor = None
         
-        # Estrategia 1 (Prioritaria): Buscar sufijo MARCA explícito.
-        # Captura: "(VALOR) MARCA" o "(VALOR) = MARCA"
-        # Ignora si empieza con AA o no, lo importante es que termine en MARCA.
-        marca_match = re.search(r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA', block, re.IGNORECASE)
-
-        # Estrategia 2 (Respaldo): Buscar formato AA(...) clásico.
-        # Solo se usa si no se encontró nada con la estrategia 1.
+        # PATRÓN MAESTRO: AA (...)
+        # Cubre:
+        # - AA(MARCA)
+        # - AA (MARCA)
+        # - A A (MARCA)
+        # - AA(MARCA) = MARCA
+        # - AA(MARCA) MARCA
+        # Captura el contenido de los paréntesis
+        
+        # 1. Búsqueda directa de AA seguido de paréntesis (ignorando espacios y saltos)
+        # re.DOTALL permite que el . coincida con saltos de linea por si el paréntesis cierra abajo
+        marca_match = re.search(r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)', block, re.IGNORECASE | re.DOTALL)
+        
+        # 2. Si falla, intentar búsqueda inversa: (...) = MARCA
         if not marca_match:
-            marca_match = re.search(r'AA\s*\(\s*([^)]+?)\s*\)', block, re.IGNORECASE)
-            
-        # Estrategia 3 (Respaldo OCR): Buscar A A(...)
-        if not marca_match:
-             marca_match = re.search(r'A\s*A\s*\(\s*([^)]+?)\s*\)', block, re.IGNORECASE)
-
-        # Estrategia 4 (Texto Plano): Buscar "MARCA: VALOR"
-        if not marca_match:
-             marca_match = re.search(r'\bMARCA\s*:?\s*([A-Z0-9\.\-\s]{2,30})(?:$|\n|;)', block, re.IGNORECASE)
+            marca_match = re.search(r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA', block, re.IGNORECASE)
 
         if marca_match:
-            cand = marca_match.group(1).strip()
-            # Filtros para evitar basura
-            if len(cand) > 1 and "CODIGO" not in cand.upper() and "MODELO" not in cand.upper():
+            cand = marca_match.group(1).strip().upper()
+            
+            # --- FILTROS DE SEGURIDAD PARA MARCA ---
+            
+            # Lista negra estricta para evitar falsos positivos como "ESTADOS UNIDOS"
+            # que pueden aparecer si la regex captura algo indebido o si el bloque incluye encabezados de página.
+            blacklisted_brands = [
+                "ESTADOS UNIDOS", "ESTADOS", "UNIDOS", "CHINA", "ITALIA", "ALEMANIA", 
+                "BRASIL", "INDIA", "JAPON", "KOREA", "COREA", "TAIWAN", "VIETNAM",
+                "SIN MARCA", "MARCAS Y NUMEROS", "MARCAS Y NÚMEROS",
+                "CODIGO", "MODELO", "CANTIDAD", "UNIDAD"
+            ]
+            
+            is_valid = True
+            if len(cand) < 2: is_valid = False
+            if any(bad in cand for bad in blacklisted_brands): is_valid = False
+            
+            if is_valid:
                 proveedor = cand
 
         monto_fob = None
