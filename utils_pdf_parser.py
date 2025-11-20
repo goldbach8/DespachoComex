@@ -192,20 +192,24 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
-        # 3.3) PROVEEDOR (Lógica Mejorada para ítems simples)
+        # 3.3) PROVEEDOR (Lógica Mejorada V4 - Estrategia Inversa)
         proveedor = None
         
         # Estrategia 1: Búsqueda estándar AA(MARCA)
-        # Usamos search multilínea flexible
-        marca_match = re.search(r'AA\s*\(\s*([^)]+?)\s*\)', block)
+        marca_match = re.search(r'AA\s*\(\s*([^)]+?)\s*\)', block, re.IGNORECASE)
         
-        # Estrategia 2: Búsqueda laxa A A (MARCA) (por errores de OCR)
+        # Estrategia 2: Búsqueda laxa A A (MARCA) (para errores de OCR)
         if not marca_match:
-             marca_match = re.search(r'A\s*A\s*\(\s*([^)]+?)\s*\)', block)
+             marca_match = re.search(r'A\s*A\s*\(\s*([^)]+?)\s*\)', block, re.IGNORECASE)
 
-        # Estrategia 3: Búsqueda explícita de la palabra "MARCA:"
+        # Estrategia 3 (NUEVA Y POTENTE): Búsqueda Inversa
+        # Busca cualquier cosa entre paréntesis que esté justo antes de "MARCA"
+        # Captura "(CTP) MARCA" o "(CTP) = MARCA" ignorando si dice AA antes.
         if not marca_match:
-             # Busca "MARCA : XXX" o "MARCA XXX"
+             marca_match = re.search(r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA', block, re.IGNORECASE)
+
+        # Estrategia 4: Búsqueda explícita "MARCA: VALOR"
+        if not marca_match:
              marca_match = re.search(r'\bMARCA\s*:?\s*([A-Z0-9\.\-\s]{2,30})(?:$|\n|;)', block, re.IGNORECASE)
 
         if marca_match:
