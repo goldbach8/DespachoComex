@@ -31,7 +31,7 @@ SUBITEM_DETAILED_PATTERN = re.compile(
 
 DEFAULT_COLS = ['despacho', 'posicion', 'moneda', 'montoFob', 'proveedor', 'esSubitem', 'tieneSubitems', 'numItem', 'itemPrincipal']
 
-# --- FUNCIÓN: EXTRACCIÓN DE VENDEDORES (ROBUSTA V6) ---
+# --- FUNCIÓN: EXTRACCIÓN DE VENDEDORES ---
 
 def extract_vendors_from_first_page(first_page_text):
     if not first_page_text: return []
@@ -109,7 +109,7 @@ def is_valid_brand(candidate):
     if any(bad in cand_up for bad in ["ESTADOS UNIDOS", "MARCAS Y"]): return False
     return True
 
-# --- FUNCIÓN PRINCIPAL DE EXTRACCIÓN ---
+# --- FUNCIÓN PRINCIPAL ---
 
 def extract_data_from_pdf_text(full_text):
     if not full_text: return pd.DataFrame(columns=DEFAULT_COLS), None, None
@@ -128,38 +128,32 @@ def extract_data_from_pdf_text(full_text):
     global_fob = extract_global_fob_total(full_text)
     cond_venta = extract_cond_venta(full_text)
     
-    # Detectar inicios de bloques de ítems
     starts = [m.start() for m in ITEM_HEADER_PATTERN.finditer(full_text)]
-    
-    # [FIX CRITICO] Capturar texto PREVIO al primer encabezado.
-    # Esto soluciona el problema donde la descripción del Ítem 1 aparece al 
-    # principio del archivo (Z-order incorrecto) antes que la tabla.
-    pre_header_text = full_text[:starts[0]] if starts else ""
-
     data = []
     
     for i, start in enumerate(starts):
+        # 1. Definir Bloque Estándar (Desde Header Actual hacia adelante)
+        # Se usa para extraer datos numéricos con precisión y no mezclarlos con el ítem anterior
         end = starts[i + 1] if i + 1 < len(starts) else len(full_text)
-        block = full_text[start:end]
-        
-        # [FIX CRITICO] Unir el texto previo al primer bloque para analizarlo junto.
-        if i == 0:
-            block = pre_header_text + "\n" + block
+        standard_block = full_text[start:end]
+        lines = [l.strip() for l in standard_block.split('\n') if l.strip()]
 
-        lines = [l.strip() for l in block.split('\n') if l.strip()]
+        # 2. Definir Bloque Expandido (Desde Header ANTERIOR hacia adelante)
+        # Se usa EXCLUSIVAMENTE para buscar la MARCA, ya que puede estar "flotando" antes del header.
+        # Al tomar desde el header anterior, capturamos ese "gap" donde vive la descripción.
+        brand_search_start = starts[i-1] if i > 0 else 0
+        brand_block = full_text[brand_search_start : end]
 
+        # --- EXTRACCIÓN DE DATOS DEL BLOQUE ESTÁNDAR ---
         num_item = None
         idx_num = None
-        # Buscar número de ítem (ej: 0001 N)
         for idx, line in enumerate(lines):
             m_num = re.match(r'^(\d{4})\s+N\b', line)
             if m_num:
                 num_item = m_num.group(1)
                 idx_num = idx
                 break
-        if num_item == 17:
-            print(block)            
-        # Buscar posición arancelaria
+
         posicion = None
         if idx_num is not None:
             for li in range(idx_num, len(lines)):
@@ -176,43 +170,38 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
-        # --- ESTRATEGIAS DE EXTRACCIÓN DE MARCA ---
+        # --- EXTRACCIÓN DE MARCA EN BLOQUE EXPANDIDO ---
         proveedor = None
         
         regex_strategies = [
-            # 1. Estrategia Específica para tu caso: AA(...) = MARCA
-            # Busca: AA(CAT) = MARCA  o  AA(CAT) MARCA
-            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
-            
-            # 2. Inversa: (CAT) = MARCA
-            r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
-
-            # 3. Estándar Genérica: AA(CAT)
-            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)',
-            
-            # 4. Multilínea con salto
-            r'(?:AA|A\s*A)\s*\n\s*\(\s*([^)]+?)\s*\)'
+            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA', # AA(X) = MARCA
+            r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',                # (X) = MARCA
+            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)',                     # AA(X)
+            r'(?:AA|A\s*A)\s*\n\s*\(\s*([^)]+?)\s*\)'                 # AA \n (X)
         ]
         
         for pattern in regex_strategies:
-            # Usamos el bloque completo (incluyendo lo que recuperamos del pre-header)
-            matches = re.finditer(pattern, block, re.IGNORECASE | re.DOTALL)
+            # Buscamos TODAS las coincidencias en el bloque expandido
+            matches = list(re.finditer(pattern, brand_block, re.IGNORECASE | re.DOTALL))
             
+            # Lógica Clave: Tomamos la ÚLTIMA coincidencia válida encontrada.
+            # Razón: Si el bloque expandido tiene [Marca Item 16] ... [Marca Item 17] ... [Header 17]
+            # La marca correspondiente a este ítem siempre será la última antes del siguiente ítem.
+            valid_matches = []
             for match in matches:
                 candidate = match.group(1).strip()
-                
-                # Limpieza de espacios internos (C A T -> CAT)
                 if re.match(r'^[A-Z\s]+$', candidate) and " " in candidate:
                      compact = candidate.replace(" ", "")
                      if len(candidate) > len(compact) * 1.5: candidate = compact
                 
                 if is_valid_brand(candidate):
-                    proveedor = candidate
-                    break 
+                    valid_matches.append(candidate)
             
-            if proveedor: break
+            if valid_matches:
+                proveedor = valid_matches[-1] # <--- AQUÍ ESTÁ EL FIX para 12, 14 y 17
+                break 
 
-        # Extracción de FOB
+        # --- EXTRACCIÓN DE FOB DEL BLOQUE ESTÁNDAR ---
         monto_fob = None
         idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)
         if idx_unidad != -1:
@@ -239,7 +228,7 @@ def extract_data_from_pdf_text(full_text):
             'itemPrincipal': None,
         })
 
-    # --- SUBITEMS ---
+    # --- SUBITEMS (Se mantiene igual) ---
     for sm in SUBITEM_DETAILED_PATTERN.finditer(full_text):
         nro_item_principal = sm.group(1).zfill(4)
         posicion_sub = sm.group(2).strip()
