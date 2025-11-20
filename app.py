@@ -320,8 +320,23 @@ elif st.session_state.app_step == 4:
         
         if global_fob_pdf is not None:
             delta = total_grouped_fob - global_fob_pdf
-            delta_color = "normal" if abs(delta) < 0.01 else "inverse"
-            col_m2.metric("FOB Global (PDF Original)", f"{global_fob_pdf:,.2f} {moneda}", delta=f"{delta:,.2f} Diff", delta_color=delta_color)
+            
+            # LÓGICA CORREGIDA DE COLOR:
+            # Si abs(delta) < 0.01 (es cero) -> 'off' (Gris/Neutro)
+            # Si NO es cero:
+            #   Si delta > 0 (Suma mayor que Global) -> 'inverse' (Rojo)
+            #   Si delta < 0 (Suma menor que Global) -> 'normal' (Rojo en valor negativo)
+            
+            if abs(delta) < 0.01:
+                delta_color = "off"
+            else:
+                delta_color = "inverse" if delta > 0 else "normal"
+
+            col_m2.metric(
+                label="FOB Global (PDF Original)", 
+                value=f"{global_fob_pdf:,.2f} {moneda}", 
+                delta=f"{delta:,.2f} Diff", 
+                delta_color=delta_color)
         else:
             col_m2.metric("FOB Global (PDF)", "No detectado")
             
