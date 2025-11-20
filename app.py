@@ -340,7 +340,7 @@ elif st.session_state.app_step == 4:
             df_summary.to_excel(writer, sheet_name='Resumen_Proveedores', index=False)
             writer.sheets['Detalle'].set_column('A:G', 15)
             
-        st.download_button("📥 Descargar Excel Completo (.xlsx)", data=buffer, file_name=f"Reporte_{st.session_state.referencia}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
+        st.download_button("📥 Descargar Excel Completo (.xlsx)", data=buffer, file_name=f"COM7466 - {st.session_state.referencia}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
         
         if st.button("🔄 Iniciar Nuevo Análisis"):
             reset_app(); st.rerun()
