@@ -63,7 +63,6 @@ def extract_vendors_from_first_page(first_page_text):
             if any(tk in line_upper for tk in trash_keywords): continue
             if re.match(r'^[A-Z0-9]+$', line) and len(line) < 8 and not any(c.isalpha() for c in line): continue
 
-            # Separar por guiones o barras, incluso si no hay espacios (Ej: COSTEX-MIRANDA)
             parts = re.split(r'[-/]', line)
             for part in parts:
                 clean_part = part.strip()
@@ -95,12 +94,9 @@ def extract_cond_venta(full_text):
 # --- VALIDACIÓN DE MARCA ---
 
 def is_valid_brand(candidate):
-    """Verifica si el texto extraído es una marca válida o basura del PDF."""
     if not candidate or len(candidate) < 2: return False
-    
     cand_up = candidate.upper().strip()
     
-    # Lista Negra Estricta
     blacklist = [
         "ESTADOS UNIDOS", "ESTADOS", "UNIDOS", "CHINA", "ITALIA", "ALEMANIA", 
         "BRASIL", "INDIA", "JAPON", "KOREA", "COREA", "TAIWAN", "VIETNAM",
@@ -109,12 +105,11 @@ def is_valid_brand(candidate):
         "PRESENTACION", "NINGUNO", "NO VALIDA", "NO_VALIDA", "TOTAL", "BULTOS"
     ]
     
-    if any(bad == cand_up for bad in blacklist): return False # Coincidencia exacta
-    if any(bad in cand_up for bad in ["ESTADOS UNIDOS", "MARCAS Y"]): return False # Coincidencia parcial peligrosa
-    
+    if any(bad == cand_up for bad in blacklist): return False
+    if any(bad in cand_up for bad in ["ESTADOS UNIDOS", "MARCAS Y"]): return False
     return True
 
-# --- FUNCIÓN PRINCIPAL ---
+# --- FUNCIÓN PRINCIPAL DE EXTRACCIÓN ---
 
 def extract_data_from_pdf_text(full_text):
     if not full_text: return pd.DataFrame(columns=DEFAULT_COLS), None, None
@@ -133,16 +128,29 @@ def extract_data_from_pdf_text(full_text):
     global_fob = extract_global_fob_total(full_text)
     cond_venta = extract_cond_venta(full_text)
     
+    # Detectar inicios de bloques de ítems
     starts = [m.start() for m in ITEM_HEADER_PATTERN.finditer(full_text)]
+    
+    # [FIX CRITICO] Capturar texto PREVIO al primer encabezado.
+    # Esto soluciona el problema donde la descripción del Ítem 1 aparece al 
+    # principio del archivo (Z-order incorrecto) antes que la tabla.
+    pre_header_text = full_text[:starts[0]] if starts else ""
+
     data = []
     
     for i, start in enumerate(starts):
         end = starts[i + 1] if i + 1 < len(starts) else len(full_text)
         block = full_text[start:end]
+        
+        # [FIX CRITICO] Unir el texto previo al primer bloque para analizarlo junto.
+        if i == 0:
+            block = pre_header_text + "\n" + block
+
         lines = [l.strip() for l in block.split('\n') if l.strip()]
 
         num_item = None
         idx_num = None
+        # Buscar número de ítem (ej: 0001 N)
         for idx, line in enumerate(lines):
             m_num = re.match(r'^(\d{4})\s+N\b', line)
             if m_num:
@@ -150,6 +158,7 @@ def extract_data_from_pdf_text(full_text):
                 idx_num = idx
                 break
 
+        # Buscar posición arancelaria
         posicion = None
         if idx_num is not None:
             for li in range(idx_num, len(lines)):
@@ -166,29 +175,26 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
-        # --- EXTRACCIÓN DE MARCA (Secuencia de Estrategias MEJORADA) ---
+        # --- ESTRATEGIAS DE EXTRACCIÓN DE MARCA ---
         proveedor = None
         
         regex_strategies = [
-            # 1. ESTRATEGIA ANCLADA: AA(...) seguido explícitamente de MARCA
-            # Busca: AA(CAT) MARCA  o  AA(CAT) = MARCA
-            # Esta es la más importante para tus ítems 1, 12, 14, 17.
+            # 1. Estrategia Específica para tu caso: AA(...) = MARCA
+            # Busca: AA(CAT) = MARCA  o  AA(CAT) MARCA
             r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
             
-            # 2. ESTRATEGIA ANCLADA INVERSA: (...) seguido de MARCA
-            # Busca: (CAT) MARCA
+            # 2. Inversa: (CAT) = MARCA
             r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
 
-            # 3. ESTRATEGIA GENÉRICA: AA(...)
-            # Esta se deja al final como fallback.
+            # 3. Estándar Genérica: AA(CAT)
             r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)',
             
-            # 4. Multilínea: AA [salto] (MARCA)
+            # 4. Multilínea con salto
             r'(?:AA|A\s*A)\s*\n\s*\(\s*([^)]+?)\s*\)'
         ]
         
         for pattern in regex_strategies:
-            # Buscamos TODAS las coincidencias en el bloque
+            # Usamos el bloque completo (incluyendo lo que recuperamos del pre-header)
             matches = re.finditer(pattern, block, re.IGNORECASE | re.DOTALL)
             
             for match in matches:
@@ -199,13 +205,13 @@ def extract_data_from_pdf_text(full_text):
                      compact = candidate.replace(" ", "")
                      if len(candidate) > len(compact) * 1.5: candidate = compact
                 
-                # VALIDACIÓN ESTRICTA
                 if is_valid_brand(candidate):
                     proveedor = candidate
-                    break # Encontramos una marca válida con esta estrategia
+                    break 
             
-            if proveedor: break # Ya tenemos proveedor, no probar más estrategias
+            if proveedor: break
 
+        # Extracción de FOB
         monto_fob = None
         idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)
         if idx_unidad != -1:
@@ -232,7 +238,7 @@ def extract_data_from_pdf_text(full_text):
             'itemPrincipal': None,
         })
 
-    # 4. --- SUBITEMS ---
+    # --- SUBITEMS ---
     for sm in SUBITEM_DETAILED_PATTERN.finditer(full_text):
         nro_item_principal = sm.group(1).zfill(4)
         posicion_sub = sm.group(2).strip()
@@ -267,8 +273,7 @@ def extract_data_from_pdf_text(full_text):
     return df, global_fob, cond_venta
 
 def extract_bk_list_from_pdf_text(full_text):
-    # Importar regex NCM_BK_PATTERN aquí o definirla si faltaba
-    NCM_BK_PATTERN = re.compile(r'\d{4}\.\d{2}\.\d{2}') # Regex básico por si falta el import
+    NCM_BK_PATTERN = re.compile(r'\d{4}\.\d{2}\.\d{2}')
     if not full_text: return []
     matches = NCM_BK_PATTERN.findall(full_text)
     return [ncm.replace('.', '') for ncm in matches]
