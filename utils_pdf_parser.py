@@ -106,7 +106,7 @@ def is_valid_brand(candidate):
         "BRASIL", "INDIA", "JAPON", "KOREA", "COREA", "TAIWAN", "VIETNAM",
         "SIN MARCA", "MARCAS Y NUMEROS", "MARCAS Y NÚMEROS", "MARCA",
         "CODIGO", "MODELO", "CANTIDAD", "UNIDAD", "KILOGRAMO", "LITRO",
-        "PRESENTACION", "NINGUNO", "NO VALIDA", "NO_VALIDA"
+        "PRESENTACION", "NINGUNO", "NO VALIDA", "NO_VALIDA", "TOTAL", "BULTOS"
     ]
     
     if any(bad == cand_up for bad in blacklist): return False # Coincidencia exacta
@@ -166,28 +166,29 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
-        # --- EXTRACCIÓN DE MARCA (Secuencia de Estrategias) ---
+        # --- EXTRACCIÓN DE MARCA (Secuencia de Estrategias MEJORADA) ---
         proveedor = None
         
-        # Lista de regex a probar en orden
         regex_strategies = [
-            # 1. AA(MARCA) o A A(MARCA) - Estándar SIM
-            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)',
+            # 1. ESTRATEGIA ANCLADA: AA(...) seguido explícitamente de MARCA
+            # Busca: AA(CAT) MARCA  o  AA(CAT) = MARCA
+            # Esta es la más importante para tus ítems 1, 12, 14, 17.
+            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
             
-            # 2. Inversa: (...) = MARCA o (...) MARCA
+            # 2. ESTRATEGIA ANCLADA INVERSA: (...) seguido de MARCA
+            # Busca: (CAT) MARCA
             r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
-            
-            # 3. Solicitud Usuario (Estrategia 4 Anterior): Texto plano "MARCA: XXX"
-            # NOTA: Esto es peligroso, por eso aplicaremos validación estricta abajo.
-            r'\bMARCA\s*:?\s*([A-Z0-9\.\-\s]{2,30})(?:$|\n|;)',
+
+            # 3. ESTRATEGIA GENÉRICA: AA(...)
+            # Esta se deja al final como fallback.
+            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)',
             
             # 4. Multilínea: AA [salto] (MARCA)
             r'(?:AA|A\s*A)\s*\n\s*\(\s*([^)]+?)\s*\)'
         ]
         
         for pattern in regex_strategies:
-            # Buscamos TODAS las coincidencias en el bloque, no solo la primera
-            # Esto ayuda si la primera coincidencia es basura (ej: "SIN MARCA" en un encabezado)
+            # Buscamos TODAS las coincidencias en el bloque
             matches = re.finditer(pattern, block, re.IGNORECASE | re.DOTALL)
             
             for match in matches:
@@ -240,7 +241,6 @@ def extract_data_from_pdf_text(full_text):
         proveedor_sub_str = sm.group(5).strip()
 
         monto_sub_fob = parse_number(fob_str)
-        # Validar también el proveedor del subitem por si acaso
         proveedor_sub = proveedor_sub_str if is_valid_brand(proveedor_sub_str) else None
         
         data.append({
@@ -267,6 +267,8 @@ def extract_data_from_pdf_text(full_text):
     return df, global_fob, cond_venta
 
 def extract_bk_list_from_pdf_text(full_text):
+    # Importar regex NCM_BK_PATTERN aquí o definirla si faltaba
+    NCM_BK_PATTERN = re.compile(r'\d{4}\.\d{2}\.\d{2}') # Regex básico por si falta el import
     if not full_text: return []
     matches = NCM_BK_PATTERN.findall(full_text)
     return [ncm.replace('.', '') for ncm in matches]
