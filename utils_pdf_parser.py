@@ -157,7 +157,6 @@ def extract_data_from_pdf_text(full_text):
     global_fob = extract_global_fob_total(full_text)
     cond_venta = extract_cond_venta(full_text)
     
-    # 2. --- LOCALIZAR BLOQUES ---
     starts = [m.start() for m in ITEM_HEADER_PATTERN.finditer(full_text)]
     data = []
     
@@ -192,29 +191,33 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
-        # 3.3) PROVEEDOR (Lógica Mejorada V4 - Estrategia Inversa)
+        # 3.3) PROVEEDOR - ESTRATEGIAS REORDENADAS
+        # Invertimos el orden para priorizar la estructura más fiable (el sufijo MARCA)
+        # sobre el prefijo AA(...) que puede capturar basura en la descripción.
+        
         proveedor = None
         
-        # Estrategia 1: Búsqueda estándar AA(MARCA)
-        marca_match = re.search(r'AA\s*\(\s*([^)]+?)\s*\)', block, re.IGNORECASE)
-        
-        # Estrategia 2: Búsqueda laxa A A (MARCA) (para errores de OCR)
+        # Estrategia 1 (Prioritaria): Buscar sufijo MARCA explícito.
+        # Captura: "(VALOR) MARCA" o "(VALOR) = MARCA"
+        # Ignora si empieza con AA o no, lo importante es que termine en MARCA.
+        marca_match = re.search(r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA', block, re.IGNORECASE)
+
+        # Estrategia 2 (Respaldo): Buscar formato AA(...) clásico.
+        # Solo se usa si no se encontró nada con la estrategia 1.
+        if not marca_match:
+            marca_match = re.search(r'AA\s*\(\s*([^)]+?)\s*\)', block, re.IGNORECASE)
+            
+        # Estrategia 3 (Respaldo OCR): Buscar A A(...)
         if not marca_match:
              marca_match = re.search(r'A\s*A\s*\(\s*([^)]+?)\s*\)', block, re.IGNORECASE)
 
-        # Estrategia 3 (NUEVA Y POTENTE): Búsqueda Inversa
-        # Busca cualquier cosa entre paréntesis que esté justo antes de "MARCA"
-        # Captura "(CTP) MARCA" o "(CTP) = MARCA" ignorando si dice AA antes.
-        if not marca_match:
-             marca_match = re.search(r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA', block, re.IGNORECASE)
-
-        # Estrategia 4: Búsqueda explícita "MARCA: VALOR"
+        # Estrategia 4 (Texto Plano): Buscar "MARCA: VALOR"
         if not marca_match:
              marca_match = re.search(r'\bMARCA\s*:?\s*([A-Z0-9\.\-\s]{2,30})(?:$|\n|;)', block, re.IGNORECASE)
 
         if marca_match:
             cand = marca_match.group(1).strip()
-            # Filtros básicos para no traer basura
+            # Filtros para evitar basura
             if len(cand) > 1 and "CODIGO" not in cand.upper() and "MODELO" not in cand.upper():
                 proveedor = cand
 
