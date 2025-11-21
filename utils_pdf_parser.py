@@ -15,6 +15,51 @@ def parse_number(num_str):
     try: return float(s)
     except ValueError: return None
 
+# --- LIMPIEZA DE SALTOS DE PÁGINA ---
+
+def clean_page_breaks(text):
+    """
+    Elimina encabezados y pies de página repetitivos para unir
+    ítems o subítems que quedaron cortados entre páginas.
+    """
+    if not text: return ""
+    
+    # Patrones de encabezado/pie de página típicos del SIM (ajustados a tu ejemplo)
+    # Buscamos bloques que interrumpen el flujo de datos.
+    trash_patterns = [
+        r'OM\s*-\s*1993\s*SIM',
+        r'Firma y Sello Despachante de Aduana',
+        r'SUBREGIMEN:',
+        r'Aduana\s+Oficialización',
+        r'Año\s*/\s*Ad\.\s*/',
+        r'IMPORTACION A CONSUMO',
+        r'\d{2}\s+\d{3}\s+[A-Z0-9]{4}\s+\d{6}\s+[A-Z]', # Id Despacho
+        r'\d+\s*de\s*\d+', # Paginación (ej: 27 de 35)
+        r'Fojas'
+    ]
+    
+    lines = text.split('\n')
+    cleaned_lines = []
+    
+    for line in lines:
+        is_trash = False
+        for pat in trash_patterns:
+            if re.search(pat, line, re.IGNORECASE):
+                is_trash = True
+                break
+        
+        # Si detectamos que es una línea de encabezado "basura", no la agregamos.
+        # Pero si es una línea con datos útiles (aunque contenga algo de basura al final),
+        # tratamos de ser conservadores.
+        if not is_trash:
+            cleaned_lines.append(line)
+        else:
+            # Opcional: Agregar un espacio para evitar que palabras se peguen
+            # si el corte fue abrupto, aunque 'join' con \n maneja la mayoría.
+            pass
+
+    return "\n".join(cleaned_lines)
+
 # --- CONSTANTES DE REGEX ---
 
 DESPACHO_PATTERN = re.compile(r'(\d{2})\s+(\d{3})\s+([A-Z0-9]{4})\s+(\d{6})\s+([A-Z])')
@@ -22,6 +67,8 @@ ITEM_HEADER_PATTERN = re.compile(r'N.? Item', re.IGNORECASE)
 POSICION_PATTERN = re.compile(r'(\d{4}\.\d{2}\.\d{2}\.\d{3}[A-Z])')
 FOB_AMOUNT_PATTERN = re.compile(r'\d{1,3}(?:\.\d{3})*,\d{2}')
 
+# Regex para subitems (ahora funcionará mejor sobre texto limpio)
+# Se hace más flexible permitiendo espacios y saltos entre campos clave
 SUBITEM_DETAILED_PATTERN = re.compile(
     r'Nro\. ítem:\s*(\d+)\s+Posición SIM:\s*([0-9\.A-Z]+)\s+Subitem Nro\.\s*:\s*(\d+)[\s\S]*?'
     r'Monto FOB:\s*(' + FOB_AMOUNT_PATTERN.pattern + r')[\s\S]*?'
@@ -82,7 +129,6 @@ def extract_global_fob_total(full_text):
     fob_match = re.search(r'FOB\s*Total\s*Divisa[\s\S]*?(' + FOB_AMOUNT_PATTERN.pattern + r')\b', full_text, re.IGNORECASE)
     if fob_match: return parse_number(fob_match.group(1))
     
-    # Fallback simple
     fob_match_simple = re.search(r'FOB\s*Total\s*(' + FOB_AMOUNT_PATTERN.pattern + r')', full_text[:3000], re.IGNORECASE)
     if fob_match_simple: return parse_number(fob_match_simple.group(1))
     return None
@@ -90,19 +136,13 @@ def extract_global_fob_total(full_text):
 def extract_cond_venta(full_text):
     if not full_text: return None
     
-    # 1. Buscar en la primera página (aprox 3000 caracteres)
     header_text = full_text[:3000]
-    
-    # Lista de Incoterms comunes
     incoterms = r'(FCA|EXW|FOB|CIF|CFR|CPT|CIP|DAP|DPU|DDP|FAS)'
     
-    # Regex que busca Incoterms pero IGNORA si están seguidos de "Total"
-    # Esto evita que coincida con el encabezado "FOB Total"
+    # Misma corrección anterior: Ignorar si es el encabezado "FOB Total"
     matches = list(re.finditer(r'\b' + incoterms + r'\b(?!\s*Total)', header_text, re.IGNORECASE))
     
     if matches:
-        # Devolvemos el último encontrado, ya que los encabezados suelen estar arriba 
-        # y los valores reales abajo o mezclados, pero el filtro (?!\s*Total) es la clave.
         return matches[-1].group(1).upper()
         
     return None
@@ -132,6 +172,10 @@ def extract_data_from_pdf_text(full_text):
 
     full_text = full_text.replace('\r\n', '\n')
     
+    # --- NUEVO: LIMPIEZA PREVIA ---
+    # Limpiamos el texto de saltos de página antes de procesar regex complejas
+    cleaned_text = clean_page_breaks(full_text)
+    
     despacho = ""
     m_desp = DESPACHO_PATTERN.search(full_text)
     if m_desp: despacho = "".join(m_desp.groups()) 
@@ -144,6 +188,7 @@ def extract_data_from_pdf_text(full_text):
     global_fob = extract_global_fob_total(full_text)
     cond_venta = extract_cond_venta(full_text)
     
+    # 1. Extracción de Ítems Normales (Usando texto original por si acaso)
     starts = [m.start() for m in ITEM_HEADER_PATTERN.finditer(full_text)]
     data = []
     
@@ -155,7 +200,6 @@ def extract_data_from_pdf_text(full_text):
         brand_search_start = starts[i-1] if i > 0 else 0
         brand_block = full_text[brand_search_start : end]
 
-        # --- EXTRACCIÓN DE DATOS DEL BLOQUE ESTÁNDAR ---
         num_item = None
         idx_num = None
         for idx, line in enumerate(lines):
@@ -181,7 +225,6 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
-        # --- EXTRACCIÓN DE MARCA ---
         proveedor = None
         regex_strategies = [
             r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
@@ -206,19 +249,13 @@ def extract_data_from_pdf_text(full_text):
                 proveedor = valid_matches[-1]
                 break 
 
-        # --- EXTRACCIÓN DE FOB (MEJORADA) ---
         monto_fob = None
-        
-        # 1. ESTRATEGIA DE ALTA PRECISIÓN (ANCHOR)
-        # Buscamos "FOB Total en Divisa" y tomamos el primer número que aparezca DESPUÉS.
-        # Esto es mucho más seguro que contar posiciones desde "UNIDAD".
-        # El límite de 200 caracteres evita saltar al siguiente ítem.
-        fob_anchor_match = re.search(r'FOB\s*Total\s*en\s*Divisa[\s\S]{0,200}?(' + FOB_AMOUNT_PATTERN.pattern + r')', standard_block, re.IGNORECASE)
+        # 1. Estrategia Anchor (Mejorada)
+        fob_anchor_match = re.search(r'FOB\s*Total\s*(?:en\s*Divisa)?[\s\S]{0,200}?(' + FOB_AMOUNT_PATTERN.pattern + r')', standard_block, re.IGNORECASE)
         if fob_anchor_match:
             monto_fob = parse_number(fob_anchor_match.group(1))
         
-        # 2. ESTRATEGIA DE RESPALDO (TU LÓGICA ORIGINAL)
-        # Solo se usa si la estrategia de alta precisión falla.
+        # 2. Fallback (Tu lógica original)
         if monto_fob is None:
             idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)
             if idx_unidad != -1:
@@ -245,8 +282,9 @@ def extract_data_from_pdf_text(full_text):
             'itemPrincipal': None,
         })
 
-    # --- SUBITEMS ---
-    for sm in SUBITEM_DETAILED_PATTERN.finditer(full_text):
+    # --- SUBITEMS (AHORA USANDO CLEANED_TEXT) ---
+    # Usamos el texto limpio donde se han unido las páginas
+    for sm in SUBITEM_DETAILED_PATTERN.finditer(cleaned_text):
         nro_item_principal = sm.group(1).zfill(4)
         posicion_sub = sm.group(2).strip()
         num_subitem = sm.group(3).zfill(4)
