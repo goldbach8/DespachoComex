@@ -58,7 +58,6 @@ ITEM_HEADER_PATTERN = re.compile(r'N.? Item', re.IGNORECASE)
 POSICION_PATTERN = re.compile(r'(\d{4}\.\d{2}\.\d{2}\.\d{3}[A-Z])')
 
 # FILTRO ESTRICTO: Solo números con EXACTAMENTE 2 decimales.
-# Esto descarta automáticamente precios unitarios (5 dec) y pesos (4 dec).
 FOB_AMOUNT_PATTERN = re.compile(r'\b\d{1,3}(?:\.\d{3})*,\d{2}\b(?!\d)')
 
 SUBITEM_DETAILED_PATTERN = re.compile(
@@ -127,15 +126,11 @@ def extract_global_fob_total(full_text):
 
 def extract_cond_venta(full_text):
     if not full_text: return None
-    
     header_text = full_text[:3000]
     incoterms = r'(FCA|EXW|FOB|CIF|CFR|CPT|CIP|DAP|DPU|DDP|FAS)'
-    
     matches = list(re.finditer(r'\b' + incoterms + r'\b(?!\s*Total)', header_text, re.IGNORECASE))
-    
     if matches:
         return matches[-1].group(1).upper()
-        
     return None
 
 # --- VALIDACIÓN DE MARCA ---
@@ -162,8 +157,6 @@ def extract_data_from_pdf_text(full_text):
     if not full_text: return pd.DataFrame(columns=DEFAULT_COLS), None, None
 
     full_text = full_text.replace('\r\n', '\n')
-    
-    # 1. Limpieza de saltos de página
     cleaned_text = clean_page_breaks(full_text)
     
     despacho = ""
@@ -238,32 +231,41 @@ def extract_data_from_pdf_text(full_text):
                 proveedor = valid_matches[-1]
                 break 
 
-        # --- EXTRACCIÓN DE FOB MEJORADA (FILTRO SEMÁNTICO) ---
+        # --- EXTRACCIÓN DE FOB (ESTRATEGIA JERÁRQUICA) ---
         monto_fob = None
         
-        # 1. Estrategia Anchor: Busca "FOB Total" explícitamente
+        # 1. Estrategia Anchor: Busca explícitamente "FOB Total"
         fob_anchor_match = re.search(r'FOB\s*Total\s*(?:en\s*Divisa)?[\s\S]{0,200}?(' + FOB_AMOUNT_PATTERN.pattern + r')', standard_block, re.IGNORECASE)
         if fob_anchor_match:
             monto_fob = parse_number(fob_anchor_match.group(1))
         
-        # 2. Estrategia Posicional Inteligente (Fallback)
+        # 2. Estrategia Posicional (Fallback mejorado)
         if monto_fob is None:
-            idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)
+            # MEJORA: Buscar primero "Unitario en Divisa" para ubicarnos en la sección de precios
+            # y evitar la sección de cantidades estadísticas que está más arriba.
+            idx_start = -1
+            for idx, l in enumerate(lines):
+                if "UNITARIO" in l.upper() and "DIVISA" in l.upper():
+                    idx_start = idx
+                    break
             
-            if idx_unidad != -1:
-                # Recorremos las líneas DESDE la que tiene UNIDAD
-                for li in range(idx_unidad, len(lines)):
+            # Si no encuentra "Unitario", usa "UNIDAD" como último recurso
+            if idx_start == -1:
+                for idx, l in enumerate(lines):
+                    if "UNIDAD" in l.upper():
+                        idx_start = idx
+                        break
+
+            if idx_start != -1:
+                for li in range(idx_start, len(lines)):
                     current_line = lines[li].upper()
                     
-                    # IMPORTANTE: Si la línea dice "UNIDAD", "CANTIDAD" o "BULTOS",
-                    # ignoramos cualquier número que haya ahí, porque será una Cantidad.
-                    if "UNIDAD" in current_line or "CANTIDAD" in current_line or "BULTOS" in current_line:
+                    # Filtros de exclusión semántica
+                    if any(bad in current_line for bad in ["UNIDAD", "CANTIDAD", "BULTOS", "PESO", "NETO", "BRUTO", "KILOGRAMO"]):
                         continue
                         
-                    # Buscamos números válidos (2 decimales) en líneas limpias
                     nums_line = FOB_AMOUNT_PATTERN.findall(lines[li])
                     if nums_line:
-                        # El primer número válido en una línea "limpia" suele ser el FOB
                         monto_fob = parse_number(nums_line[0])
                         break
 
@@ -279,7 +281,7 @@ def extract_data_from_pdf_text(full_text):
             'itemPrincipal': None,
         })
 
-    # --- SUBITEMS (Usando texto limpio) ---
+    # --- SUBITEMS ---
     for sm in SUBITEM_DETAILED_PATTERN.finditer(cleaned_text):
         nro_item_principal = sm.group(1).zfill(4)
         posicion_sub = sm.group(2).strip()
