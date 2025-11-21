@@ -31,8 +31,8 @@ def clean_page_breaks(text):
         r'Aduana\s+Oficialización',
         r'Año\s*/\s*Ad\.\s*/',
         r'IMPORTACION A CONSUMO',
-        r'\d{2}\s+\d{3}\s+[A-Z0-9]{4}\s+\d{6}\s+[A-Z]',
-        r'\d+\s*de\s*\d+',
+        r'\d{2}\s+\d{3}\s+[A-Z0-9]{4}\s+\d{6}\s+[A-Z]', # Id Despacho
+        r'\d+\s*de\s*\d+', # Paginación
         r'Fojas'
     ]
     
@@ -56,7 +56,7 @@ DESPACHO_PATTERN = re.compile(r'(\d{2})\s+(\d{3})\s+([A-Z0-9]{4})\s+(\d{6})\s+([
 ITEM_HEADER_PATTERN = re.compile(r'N.? Item', re.IGNORECASE)
 POSICION_PATTERN = re.compile(r'(\d{4}\.\d{2}\.\d{2}\.\d{3}[A-Z])')
 
-# FILTRO ESTRICTO: Solo números con EXACTAMENTE 2 decimales.
+# Filtro estricto: 2 decimales. Descarta precios unitarios (5 dec) y pesos (4 dec).
 FOB_AMOUNT_PATTERN = re.compile(r'\b\d{1,3}(?:\.\d{3})*,\d{2}\b(?!\d)')
 
 SUBITEM_DETAILED_PATTERN = re.compile(
@@ -230,41 +230,46 @@ def extract_data_from_pdf_text(full_text):
                 proveedor = valid_matches[-1]
                 break 
 
-        # --- EXTRACCIÓN DE FOB (ESTRATEGIA JERÁRQUICA DE 3 PASOS) ---
+        # --- EXTRACCIÓN DE FOB REFINADA (Prioridad a Gemelos y Descarte por "UNIDAD") ---
         monto_fob = None
         
-        # PASO 1: Estrategia "Anchor" (Busca etiqueta explícita)
-        fob_anchor_match = re.search(r'(?:FOB\s*Total|Monto\s*FOB)[\s\S]{0,200}?(' + FOB_AMOUNT_PATTERN.pattern + r')', standard_block, re.IGNORECASE)
+        # PASO 1: Estrategia "Anchor" (Etiqueta explícita)
+        fob_anchor_match = re.search(r'FOB\s*Total\s*(?:en\s*Divisa)?[\s\S]{0,200}?(' + FOB_AMOUNT_PATTERN.pattern + r')', standard_block, re.IGNORECASE)
         if fob_anchor_match:
             monto_fob = parse_number(fob_anchor_match.group(1))
         
-        # PASO 2: Estrategia "Gemelos" (Busca línea con 2 números iguales, típico de FOB Divisa/Dolar)
+        # PASO 2: Estrategia "Gemelos" (Números duplicados en la misma línea)
+        # Esto resuelve casos como "4797,48 4797,48"
         if monto_fob is None:
             for line in lines:
-                nums = FOB_AMOUNT_PATTERN.findall(line)
-                if len(nums) >= 2:
-                     # Si hay 2 o más números válidos (2 decimales) en la misma línea, es muy probable que sea el precio.
-                     monto_fob = parse_number(nums[0])
-                     break
-
-        # PASO 3: Estrategia de Filtrado (Fallback)
-        # Si fallan las anteriores, busca el primer número válido que NO esté en una línea "contaminada"
-        if monto_fob is None:
-            # Palabras que indican que el número en esa línea NO es el FOB
-            BAD_WORDS = ["UNIDAD", "CANTIDAD", "BULTOS", "PESO", "NETO", "BRUTO", "TOTAL", "PAGADO", "LIQUIDACION", "TASA", "DERECHOS", "IMP.", "SEGURO", "FLETE"]
-            
-            for line in lines:
-                line_upper = line.upper()
-                
-                # Si la línea tiene alguna palabra prohibida, la saltamos completamente
-                if any(bad in line_upper for bad in BAD_WORDS):
+                # Ignorar líneas con "UNIDAD" para evitar falsos positivos como "UNIDAD 756,00"
+                if "UNIDAD" in line.upper() or "CANTIDAD" in line.upper():
                     continue
-                
-                # Si la línea está limpia, buscamos un número válido
-                nums_line = FOB_AMOUNT_PATTERN.findall(line)
-                if nums_line:
-                    monto_fob = parse_number(nums_line[0])
+                    
+                nums = FOB_AMOUNT_PATTERN.findall(line)
+                # Si encontramos 2 o más números de formato precio en una línea limpia, es el FOB (Divisa/Dolar)
+                if len(nums) >= 2:
+                    monto_fob = parse_number(nums[0])
                     break
+
+        # PASO 3: Estrategia Posicional con Descarte Activo (Fallback)
+        if monto_fob is None:
+            idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)
+            
+            if idx_unidad != -1:
+                for li in range(idx_unidad, len(lines)):
+                    current_line = lines[li].upper()
+                    
+                    # DESCARTE CRÍTICO: Si la línea dice UNIDAD o CANTIDAD, ignorar CUALQUIER número en ella.
+                    # Esto previene leer la cantidad estadística (756,00) como FOB.
+                    if "UNIDAD" in current_line or "CANTIDAD" in current_line or "BULTOS" in current_line:
+                        continue
+                        
+                    nums_line = FOB_AMOUNT_PATTERN.findall(lines[li])
+                    if nums_line:
+                        # El primer número válido que encontramos en una línea "limpia" es el FOB
+                        monto_fob = parse_number(nums_line[0])
+                        break
 
         data.append({
             'despacho': despacho,
@@ -278,7 +283,7 @@ def extract_data_from_pdf_text(full_text):
             'itemPrincipal': None,
         })
 
-    # --- SUBITEMS (Usando texto limpio) ---
+    # --- SUBITEMS ---
     for sm in SUBITEM_DETAILED_PATTERN.finditer(cleaned_text):
         nro_item_principal = sm.group(1).zfill(4)
         posicion_sub = sm.group(2).strip()
