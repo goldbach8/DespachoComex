@@ -227,7 +227,71 @@ elif st.session_state.app_step == 2:
     mask_error = mask_fob_error | mask_brand_error
     
     df_errors = df_work[mask_error].copy()
+    st.markdown("---")
+    st.markdown("### ⚖️ Validación Cruzada: Ítems vs. Subítems")
     
+    # 1. Identificar Ítems Principales que tienen estructura de subítems
+    parents_with_subs = df_work[df_work['tieneSubitems'] == True]
+    
+    inconsistencies = []
+    
+    # 2. Iterar y comparar
+    for _, parent in parents_with_subs.iterrows():
+        p_item = parent['numItem']
+        # Asegurar float, tratar NaN como 0
+        p_fob = float(parent['montoFob']) if pd.notna(parent['montoFob']) else 0.0
+        
+        # Filtrar los hijos correspondientes a este padre
+        children = df_work[
+            (df_work['esSubitem'] == True) & 
+            (df_work['itemPrincipal'] == p_item)
+        ]
+        
+        # Calcular suma de hijos
+        c_fob_sum = children['montoFob'].sum()
+        c_count = len(children)
+        
+        # Calcular diferencia
+        diff = p_fob - c_fob_sum
+        
+        # Si la diferencia es mayor a 1 centavo (para evitar errores de float), reportar
+        if abs(diff) > 0.01:
+            inconsistencies.append({
+                "Item": p_item,
+                "FOB Principal": p_fob,
+                "Suma Subítems": c_fob_sum,
+                "Diferencia": round(diff, 2),
+                "Cant. Subítems Leídos": c_count
+            })
+    
+    # 3. Mostrar resultados
+    if inconsistencies:
+        df_inc = pd.DataFrame(inconsistencies)
+        
+        st.error(
+            f"⚠️ **Diferencia Detectada:** Se encontraron {len(df_inc)} ítems donde la suma de sus partes no coincide con el total declarado."
+        )
+        
+        st.dataframe(
+            df_inc.style.format({
+                "FOB Principal": "{:,.2f}", 
+                "Suma Subítems": "{:,.2f}",
+                "Diferencia": "{:,.2f}"
+            }).background_gradient(subset=['Diferencia'], cmap='RdYlGn', vmin=-100, vmax=100),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        st.info(
+            """
+            **Diagnóstico:**
+            * Si la **Diferencia es positiva** (ej: 500.00), significa que faltan subítems por leer (probablemente cortados por salto de página).
+            * Si la **Diferencia es negativa**, puede haber un error leyendo un monto (ej: leer cantidad como precio).
+            """
+        )
+    else:
+        st.success("✅ **Validación Exitosa:** La suma de todos los subítems coincide perfectamente con sus ítems principales.")
+        
     if not df_errors.empty:
         # Calcular contadores
         count_fob = df_errors['montoFob'].isna().sum()
