@@ -401,21 +401,36 @@ elif st.session_state.app_step == 4:
         col_m3.metric("Proveedores", len(df_summary))
         
         # MÉTRICA DE CONDICIÓN DE VENTA CON ALERTA VISUAL
+        # MÉTRICA DE CONDICIÓN DE VENTA (LÓGICA TRI-ESTADO: Gris, Verde, Rojo)
         with col_m4:
-            cond_str = str(cond_venta).strip().upper() if cond_venta else 'N/A'
-            if cond_str == 'FOB':
-                st.markdown(
-                    f"""
-                    <div class="metric-alert-box alert-green">
-                        Cond. Venta<br><span style="font-size: 1.4rem;">{cond_str}</span>
-                    </div>
-                    """, unsafe_allow_html=True
-                )
+            raw_cond = st.session_state.get('cond_venta')
+            
+            if raw_cond:
+                cond_str = str(raw_cond).strip().upper()
+                if cond_str == 'FOB':
+                    # Caso ideal: Verde
+                    st.markdown(
+                        f"""
+                        <div class="metric-alert-box alert-green">
+                            Cond. Venta<br><span style="font-size: 1.4rem;">{cond_str}</span>
+                        </div>
+                        """, unsafe_allow_html=True
+                    )
+                else:
+                    # Cualquier otro valor (ej. FCA): Rojo
+                    st.markdown(
+                        f"""
+                        <div class="metric-alert-box alert-red">
+                            Cond. Venta<br><span style="font-size: 1.4rem;">{cond_str}</span>
+                        </div>
+                        """, unsafe_allow_html=True
+                    )
             else:
+                # No encontrado: Gris
                 st.markdown(
-                    f"""
-                    <div class="metric-alert-box alert-red">
-                        Cond. Venta<br><span style="font-size: 1.4rem;">{cond_str}</span>
+                    """
+                    <div class="metric-alert-box" style="background-color: #f0f2f6; color: #6c757d; border: 1px solid #d1d5db;">
+                        Cond. Venta<br><span style="font-size: 1.2rem;">NO IDENTIFICADO</span>
                     </div>
                     """, unsafe_allow_html=True
                 )
