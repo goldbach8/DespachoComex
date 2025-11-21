@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 def parse_number(num_str):
     """Convierte string de formato SIM ("1.234,56") a float Python."""
     if not num_str: return None
-    # Eliminar puntos de mil y cambiar coma decimal por punto
     s = num_str.replace('.', '').replace(',', '.')
     try: return float(s)
     except ValueError: return None
@@ -23,7 +22,6 @@ ITEM_HEADER_PATTERN = re.compile(r'N.? Item', re.IGNORECASE)
 POSICION_PATTERN = re.compile(r'(\d{4}\.\d{2}\.\d{2}\.\d{3}[A-Z])')
 FOB_AMOUNT_PATTERN = re.compile(r'\d{1,3}(?:\.\d{3})*,\d{2}')
 
-# Regex mejorada para subitems
 SUBITEM_DETAILED_PATTERN = re.compile(
     r'Nro\. ítem:\s*(\d+)\s+Posición SIM:\s*([0-9\.A-Z]+)\s+Subitem Nro\.\s*:\s*(\d+)[\s\S]*?'
     r'Monto FOB:\s*(' + FOB_AMOUNT_PATTERN.pattern + r')[\s\S]*?'
@@ -81,31 +79,16 @@ def extract_vendors_from_first_page(first_page_text):
 
 def extract_global_fob_total(full_text):
     if not full_text: return None
-    # Buscar primero en la primera pagina (donde suele estar el total general)
-    first_page_limit = 3000 # Caracteres aprox de la primera pagina
-    intro_text = full_text[:first_page_limit]
-    
-    fob_match = re.search(r'FOB\s*Total\s*[\n\r]*(' + FOB_AMOUNT_PATTERN.pattern + r')\b', intro_text, re.IGNORECASE)
-    if fob_match: 
-        return parse_number(fob_match.group(1))
-    
-    # Fallback: Buscar en todo el texto si no se encontró al principio
-    fob_match_full = re.search(r'FOB\s*Total\s*Divisa[\s\S]*?(' + FOB_AMOUNT_PATTERN.pattern + r')\b', full_text, re.IGNORECASE)
-    if fob_match_full: return parse_number(fob_match_full.group(1))
-    
+    fob_match = re.search(r'FOB\s*Total\s*Divisa[\s\S]*?(' + FOB_AMOUNT_PATTERN.pattern + r')\b', full_text, re.IGNORECASE)
+    if fob_match: return parse_number(fob_match.group(1))
     return None
 
 def extract_cond_venta(full_text):
     if not full_text: return None
-    # Corrección: Permitir saltos de línea (\s incluye \n) entre "Venta" y el código
-    # También ser más estricto con el formato del código (3 letras mayúsculas)
-    match = re.search(r'Cond\.?\s*Venta[\s\.:]+([A-Z]{3})\b', full_text, re.IGNORECASE)
+    match = re.search(r'Cond\.?\s*Venta\s*([A-Z]{3})', full_text, re.IGNORECASE)
     if match: return match.group(1).upper()
-    
-    # Búsqueda secundaria si la primera falla
-    match_loose = re.search(r'\b(FOB|CIF|EXW|FCA|CFR|CPT|CIP|DAP|DPU|DDP|FAS)\b', full_text[:2000], re.IGNORECASE)
+    match_loose = re.search(r'\b(FOB|CIF|EXW|FCA|CFR|CPT|CIP|DAP|DPU|DDP|FAS)\b', full_text, re.IGNORECASE)
     if match_loose: return match_loose.group(1).upper()
-    
     return None
 
 # --- VALIDACIÓN DE MARCA ---
@@ -149,14 +132,19 @@ def extract_data_from_pdf_text(full_text):
     data = []
     
     for i, start in enumerate(starts):
+        # 1. Definir Bloque Estándar (Desde Header Actual hacia adelante)
+        # Se usa para extraer datos numéricos con precisión y no mezclarlos con el ítem anterior
         end = starts[i + 1] if i + 1 < len(starts) else len(full_text)
         standard_block = full_text[start:end]
         lines = [l.strip() for l in standard_block.split('\n') if l.strip()]
 
+        # 2. Definir Bloque Expandido (Desde Header ANTERIOR hacia adelante)
+        # Se usa EXCLUSIVAMENTE para buscar la MARCA, ya que puede estar "flotando" antes del header.
+        # Al tomar desde el header anterior, capturamos ese "gap" donde vive la descripción.
         brand_search_start = starts[i-1] if i > 0 else 0
         brand_block = full_text[brand_search_start : end]
 
-        # --- EXTRACCIÓN DE NUMERO E ITEM ---
+        # --- EXTRACCIÓN DE DATOS DEL BLOQUE ESTÁNDAR ---
         num_item = None
         idx_num = None
         for idx, line in enumerate(lines):
@@ -182,17 +170,23 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
-        # --- EXTRACCIÓN DE MARCA ---
+        # --- EXTRACCIÓN DE MARCA EN BLOQUE EXPANDIDO ---
         proveedor = None
+        
         regex_strategies = [
-            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
-            r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
-            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)',
-            r'(?:AA|A\s*A)\s*\n\s*\(\s*([^)]+?)\s*\)'
+            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA', # AA(X) = MARCA
+            r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',                # (X) = MARCA
+            r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)',                     # AA(X)
+            r'(?:AA|A\s*A)\s*\n\s*\(\s*([^)]+?)\s*\)'                 # AA \n (X)
         ]
         
         for pattern in regex_strategies:
+            # Buscamos TODAS las coincidencias en el bloque expandido
             matches = list(re.finditer(pattern, brand_block, re.IGNORECASE | re.DOTALL))
+            
+            # Lógica Clave: Tomamos la ÚLTIMA coincidencia válida encontrada.
+            # Razón: Si el bloque expandido tiene [Marca Item 16] ... [Marca Item 17] ... [Header 17]
+            # La marca correspondiente a este ítem siempre será la última antes del siguiente ítem.
             valid_matches = []
             for match in matches:
                 candidate = match.group(1).strip()
@@ -204,49 +198,23 @@ def extract_data_from_pdf_text(full_text):
                     valid_matches.append(candidate)
             
             if valid_matches:
-                proveedor = valid_matches[-1] 
+                proveedor = valid_matches[-1] # <--- AQUÍ ESTÁ EL FIX para 12, 14 y 17
                 break 
 
-        # --- EXTRACCIÓN DE FOB MEJORADA ---
+        # --- EXTRACCIÓN DE FOB DEL BLOQUE ESTÁNDAR ---
         monto_fob = None
-        
-        # Estrategia: Buscar explícitamente la etiqueta "FOB Total" o "FOB Total en Divisa"
-        # dentro del bloque del ítem y tomar el número siguiente.
-        for line_idx, line in enumerate(lines):
-            # Buscar palabra clave de FOB
-            if "FOB" in line.upper() and "TOTAL" in line.upper():
-                # Opción 1: El número está en la misma línea (ej: FOB Total 1.234,56)
-                nums_in_line = FOB_AMOUNT_PATTERN.findall(line)
-                if nums_in_line:
-                    monto_fob = parse_number(nums_in_line[-1]) # Usar el último por si hay basura antes
-                    break
-                
-                # Opción 2: El número está en la línea siguiente o subsiguiente
-                # (ej: FOB Total en Divisa \n 1.234,56)
-                found_number = False
-                for offset in range(1, 4): # Mirar hasta 3 líneas abajo
-                    if line_idx + offset < len(lines):
-                        next_line = lines[line_idx + offset]
-                        nums_next = FOB_AMOUNT_PATTERN.findall(next_line)
-                        if nums_next:
-                            monto_fob = parse_number(nums_next[0]) # Tomar el primero encontrado
-                            found_number = True
-                            break
-                if found_number:
-                    break
-
-        # Fallback: Si falló la estrategia por etiquetas, usar la anterior basada en "UNIDAD"
-        # pero con índices más conservadores
-        if monto_fob is None:
-            idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)
-            if idx_unidad != -1:
-                numeros_str = []
-                for li in range(idx_unidad, len(lines)):
-                    nums_line = FOB_AMOUNT_PATTERN.findall(lines[li])
-                    if nums_line: numeros_str.extend(nums_line)
-                    if len(numeros_str) >= 4: break
-                
-                if len(numeros_str) >= 2: monto_fob = parse_number(numeros_str[1])
+        idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)
+        if idx_unidad != -1:
+            numeros_str = []
+            for li in range(idx_unidad, len(lines)):
+                nums_line = FOB_AMOUNT_PATTERN.findall(lines[li])
+                if nums_line: numeros_str.extend(nums_line)
+                if len(numeros_str) >= 4: break
+            
+            if len(numeros_str) >= 2: monto_fob = parse_number(numeros_str[1])
+            if len(numeros_str) >= 3: monto_fob = parse_number(numeros_str[1])
+            if len(numeros_str) >= 4: monto_fob = parse_number(numeros_str[2])
+            if len(numeros_str) >= 5: monto_fob = parse_number(numeros_str[3])
 
         data.append({
             'despacho': despacho,

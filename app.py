@@ -401,33 +401,21 @@ elif st.session_state.app_step == 4:
         col_m3.metric("Proveedores", len(df_summary))
         
         # MÉTRICA DE CONDICIÓN DE VENTA CON ALERTA VISUAL
-        # MÉTRICA DE CONDICIÓN DE VENTA CON LOGICA TRI-ESTADO
         with col_m4:
-            raw_cond = st.session_state.get('cond_venta')
-            
-            if raw_cond:
-                cond_str = str(raw_cond).strip().upper()
-                if cond_str == 'FOB':
-                    st.markdown(
-                        f"""
-                        <div class="metric-alert-box alert-green">
-                            Cond. Venta<br><span style="font-size: 1.4rem;">{cond_str}</span>
-                        </div>
-                        """, unsafe_allow_html=True
-                    )
-                else:
-                    st.markdown(
-                        f"""
-                        <div class="metric-alert-box alert-red">
-                            Cond. Venta<br><span style="font-size: 1.4rem;">{cond_str}</span>
-                        </div>
-                        """, unsafe_allow_html=True
-                    )
+            cond_str = str(cond_venta).strip().upper() if cond_venta else 'N/A'
+            if cond_str == 'FOB':
+                st.markdown(
+                    f"""
+                    <div class="metric-alert-box alert-green">
+                        Cond. Venta<br><span style="font-size: 1.4rem;">{cond_str}</span>
+                    </div>
+                    """, unsafe_allow_html=True
+                )
             else:
                 st.markdown(
-                    """
-                    <div class="metric-alert-box" style="background-color: #e0e0e0; color: #555; border: 1px solid #ccc;">
-                        Cond. Venta<br><span style="font-size: 1.2rem;">NO IDENTIFICADO</span>
+                    f"""
+                    <div class="metric-alert-box alert-red">
+                        Cond. Venta<br><span style="font-size: 1.4rem;">{cond_str}</span>
                     </div>
                     """, unsafe_allow_html=True
                 )
