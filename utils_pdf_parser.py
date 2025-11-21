@@ -24,8 +24,7 @@ def clean_page_breaks(text):
     """
     if not text: return ""
     
-    # Patrones de encabezado/pie de página típicos del SIM (ajustados a tu ejemplo)
-    # Buscamos bloques que interrumpen el flujo de datos.
+    # Patrones de encabezado/pie de página típicos del SIM
     trash_patterns = [
         r'OM\s*-\s*1993\s*SIM',
         r'Firma y Sello Despachante de Aduana',
@@ -34,7 +33,7 @@ def clean_page_breaks(text):
         r'Año\s*/\s*Ad\.\s*/',
         r'IMPORTACION A CONSUMO',
         r'\d{2}\s+\d{3}\s+[A-Z0-9]{4}\s+\d{6}\s+[A-Z]', # Id Despacho
-        r'\d+\s*de\s*\d+', # Paginación (ej: 27 de 35)
+        r'\d+\s*de\s*\d+', # Paginación
         r'Fojas'
     ]
     
@@ -47,16 +46,8 @@ def clean_page_breaks(text):
             if re.search(pat, line, re.IGNORECASE):
                 is_trash = True
                 break
-        
-        # Si detectamos que es una línea de encabezado "basura", no la agregamos.
-        # Pero si es una línea con datos útiles (aunque contenga algo de basura al final),
-        # tratamos de ser conservadores.
         if not is_trash:
             cleaned_lines.append(line)
-        else:
-            # Opcional: Agregar un espacio para evitar que palabras se peguen
-            # si el corte fue abrupto, aunque 'join' con \n maneja la mayoría.
-            pass
 
     return "\n".join(cleaned_lines)
 
@@ -65,10 +56,13 @@ def clean_page_breaks(text):
 DESPACHO_PATTERN = re.compile(r'(\d{2})\s+(\d{3})\s+([A-Z0-9]{4})\s+(\d{6})\s+([A-Z])')
 ITEM_HEADER_PATTERN = re.compile(r'N.? Item', re.IGNORECASE)
 POSICION_PATTERN = re.compile(r'(\d{4}\.\d{2}\.\d{2}\.\d{3}[A-Z])')
-FOB_AMOUNT_PATTERN = re.compile(r'\d{1,3}(?:\.\d{3})*,\d{2}')
 
-# Regex para subitems (ahora funcionará mejor sobre texto limpio)
-# Se hace más flexible permitiendo espacios y saltos entre campos clave
+# MEJORA CRÍTICA: FILTRO DE DECIMALES
+# \b al inicio y final asegura límites de palabra.
+# (?!\d) al final asegura que NO haya un tercer dígito decimal.
+# Esto ignora '41,10000' (unitario) y '6,6900' (peso), pero captura '164,40' (FOB).
+FOB_AMOUNT_PATTERN = re.compile(r'\b\d{1,3}(?:\.\d{3})*,\d{2}\b(?!\d)')
+
 SUBITEM_DETAILED_PATTERN = re.compile(
     r'Nro\. ítem:\s*(\d+)\s+Posición SIM:\s*([0-9\.A-Z]+)\s+Subitem Nro\.\s*:\s*(\d+)[\s\S]*?'
     r'Monto FOB:\s*(' + FOB_AMOUNT_PATTERN.pattern + r')[\s\S]*?'
@@ -139,7 +133,7 @@ def extract_cond_venta(full_text):
     header_text = full_text[:3000]
     incoterms = r'(FCA|EXW|FOB|CIF|CFR|CPT|CIP|DAP|DPU|DDP|FAS)'
     
-    # Misma corrección anterior: Ignorar si es el encabezado "FOB Total"
+    # Busca Incoterms pero IGNORA si están seguidos de "Total" (evita "FOB Total")
     matches = list(re.finditer(r'\b' + incoterms + r'\b(?!\s*Total)', header_text, re.IGNORECASE))
     
     if matches:
@@ -172,8 +166,7 @@ def extract_data_from_pdf_text(full_text):
 
     full_text = full_text.replace('\r\n', '\n')
     
-    # --- NUEVO: LIMPIEZA PREVIA ---
-    # Limpiamos el texto de saltos de página antes de procesar regex complejas
+    # 1. Limpieza de saltos de página (Para Subitems cortados)
     cleaned_text = clean_page_breaks(full_text)
     
     despacho = ""
@@ -188,7 +181,6 @@ def extract_data_from_pdf_text(full_text):
     global_fob = extract_global_fob_total(full_text)
     cond_venta = extract_cond_venta(full_text)
     
-    # 1. Extracción de Ítems Normales (Usando texto original por si acaso)
     starts = [m.start() for m in ITEM_HEADER_PATTERN.finditer(full_text)]
     data = []
     
@@ -249,13 +241,15 @@ def extract_data_from_pdf_text(full_text):
                 proveedor = valid_matches[-1]
                 break 
 
+        # --- EXTRACCIÓN DE FOB ---
         monto_fob = None
-        # 1. Estrategia Anchor (Mejorada)
+        
+        # 1. Estrategia "Anchor": Busca explícitamente "FOB Total"
         fob_anchor_match = re.search(r'FOB\s*Total\s*(?:en\s*Divisa)?[\s\S]{0,200}?(' + FOB_AMOUNT_PATTERN.pattern + r')', standard_block, re.IGNORECASE)
         if fob_anchor_match:
             monto_fob = parse_number(fob_anchor_match.group(1))
         
-        # 2. Fallback (Tu lógica original)
+        # 2. Estrategia "Posicional" (Fallback)
         if monto_fob is None:
             idx_unidad = next((i for i, l in enumerate(lines) if "UNIDAD" in l), -1)
             if idx_unidad != -1:
@@ -265,10 +259,13 @@ def extract_data_from_pdf_text(full_text):
                     if nums_line: numeros_str.extend(nums_line)
                     if len(numeros_str) >= 4: break
                 
-                if len(numeros_str) >= 2: monto_fob = parse_number(numeros_str[1])
-                if len(numeros_str) >= 3: monto_fob = parse_number(numeros_str[1])
-                if len(numeros_str) >= 4: monto_fob = parse_number(numeros_str[2])
-                if len(numeros_str) >= 5: monto_fob = parse_number(numeros_str[3])
+                # Al haber filtrado los números de 4/5 decimales (Precios unitarios y pesos),
+                # la lista 'numeros_str' ahora contiene principalmente Cantidades (2 dec) y FOBs (2 dec).
+                
+                if len(numeros_str) >= 2: 
+                    # Generalmente index 0 es Cantidad (ej: 4,00) y index 1 es FOB (ej: 164,40)
+                    # Si index 0 fuera FOB, sería un caso raro donde no hay cantidad, pero el SIM siempre trae cantidad.
+                    monto_fob = parse_number(numeros_str[1])
 
         data.append({
             'despacho': despacho,
@@ -282,8 +279,7 @@ def extract_data_from_pdf_text(full_text):
             'itemPrincipal': None,
         })
 
-    # --- SUBITEMS (AHORA USANDO CLEANED_TEXT) ---
-    # Usamos el texto limpio donde se han unido las páginas
+    # --- SUBITEMS (Usando texto limpio 'cleaned_text') ---
     for sm in SUBITEM_DETAILED_PATTERN.finditer(cleaned_text):
         nro_item_principal = sm.group(1).zfill(4)
         posicion_sub = sm.group(2).strip()
