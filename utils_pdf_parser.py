@@ -24,7 +24,6 @@ def clean_page_breaks(text):
     """
     if not text: return ""
     
-    # Patrones de encabezado/pie de página típicos del SIM
     trash_patterns = [
         r'OM\s*-\s*1993\s*SIM',
         r'Firma y Sello Despachante de Aduana',
@@ -32,8 +31,8 @@ def clean_page_breaks(text):
         r'Aduana\s+Oficialización',
         r'Año\s*/\s*Ad\.\s*/',
         r'IMPORTACION A CONSUMO',
-        r'\d{2}\s+\d{3}\s+[A-Z0-9]{4}\s+\d{6}\s+[A-Z]', # Id Despacho
-        r'\d+\s*de\s*\d+', # Paginación
+        r'\d{2}\s+\d{3}\s+[A-Z0-9]{4}\s+\d{6}\s+[A-Z]',
+        r'\d+\s*de\s*\d+',
         r'Fojas'
     ]
     
@@ -231,43 +230,41 @@ def extract_data_from_pdf_text(full_text):
                 proveedor = valid_matches[-1]
                 break 
 
-        # --- EXTRACCIÓN DE FOB (ESTRATEGIA JERÁRQUICA) ---
+        # --- EXTRACCIÓN DE FOB (ESTRATEGIA JERÁRQUICA DE 3 PASOS) ---
         monto_fob = None
         
-        # 1. Estrategia Anchor: Busca explícitamente "FOB Total"
-        fob_anchor_match = re.search(r'FOB\s*Total\s*(?:en\s*Divisa)?[\s\S]{0,200}?(' + FOB_AMOUNT_PATTERN.pattern + r')', standard_block, re.IGNORECASE)
+        # PASO 1: Estrategia "Anchor" (Busca etiqueta explícita)
+        fob_anchor_match = re.search(r'(?:FOB\s*Total|Monto\s*FOB)[\s\S]{0,200}?(' + FOB_AMOUNT_PATTERN.pattern + r')', standard_block, re.IGNORECASE)
         if fob_anchor_match:
             monto_fob = parse_number(fob_anchor_match.group(1))
         
-        # 2. Estrategia Posicional (Fallback mejorado)
+        # PASO 2: Estrategia "Gemelos" (Busca línea con 2 números iguales, típico de FOB Divisa/Dolar)
         if monto_fob is None:
-            # MEJORA: Buscar primero "Unitario en Divisa" para ubicarnos en la sección de precios
-            # y evitar la sección de cantidades estadísticas que está más arriba.
-            idx_start = -1
-            for idx, l in enumerate(lines):
-                if "UNITARIO" in l.upper() and "DIVISA" in l.upper():
-                    idx_start = idx
-                    break
-            
-            # Si no encuentra "Unitario", usa "UNIDAD" como último recurso
-            if idx_start == -1:
-                for idx, l in enumerate(lines):
-                    if "UNIDAD" in l.upper():
-                        idx_start = idx
-                        break
+            for line in lines:
+                nums = FOB_AMOUNT_PATTERN.findall(line)
+                if len(nums) >= 2:
+                     # Si hay 2 o más números válidos (2 decimales) en la misma línea, es muy probable que sea el precio.
+                     monto_fob = parse_number(nums[0])
+                     break
 
-            if idx_start != -1:
-                for li in range(idx_start, len(lines)):
-                    current_line = lines[li].upper()
-                    
-                    # Filtros de exclusión semántica
-                    if any(bad in current_line for bad in ["UNIDAD", "CANTIDAD", "BULTOS", "PESO", "NETO", "BRUTO", "KILOGRAMO"]):
-                        continue
-                        
-                    nums_line = FOB_AMOUNT_PATTERN.findall(lines[li])
-                    if nums_line:
-                        monto_fob = parse_number(nums_line[0])
-                        break
+        # PASO 3: Estrategia de Filtrado (Fallback)
+        # Si fallan las anteriores, busca el primer número válido que NO esté en una línea "contaminada"
+        if monto_fob is None:
+            # Palabras que indican que el número en esa línea NO es el FOB
+            BAD_WORDS = ["UNIDAD", "CANTIDAD", "BULTOS", "PESO", "NETO", "BRUTO", "TOTAL", "PAGADO", "LIQUIDACION", "TASA", "DERECHOS", "IMP.", "SEGURO", "FLETE"]
+            
+            for line in lines:
+                line_upper = line.upper()
+                
+                # Si la línea tiene alguna palabra prohibida, la saltamos completamente
+                if any(bad in line_upper for bad in BAD_WORDS):
+                    continue
+                
+                # Si la línea está limpia, buscamos un número válido
+                nums_line = FOB_AMOUNT_PATTERN.findall(line)
+                if nums_line:
+                    monto_fob = parse_number(nums_line[0])
+                    break
 
         data.append({
             'despacho': despacho,
@@ -281,7 +278,7 @@ def extract_data_from_pdf_text(full_text):
             'itemPrincipal': None,
         })
 
-    # --- SUBITEMS ---
+    # --- SUBITEMS (Usando texto limpio) ---
     for sm in SUBITEM_DETAILED_PATTERN.finditer(cleaned_text):
         nro_item_principal = sm.group(1).zfill(4)
         posicion_sub = sm.group(2).strip()
