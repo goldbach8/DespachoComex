@@ -116,7 +116,7 @@ def extract_vendors_from_first_page(first_page_text):
 
 def extract_global_fob_total(full_text):
     if not full_text: return None
-    fob_match = re.search(r'FOB\s*Total\s*Divisa[\s\S]*?(' + FOB_AMOUNT_PATTERN.pattern + r')\b', full_text, re.IGNORECASE)
+    fob_match = re.search(r'FOB\s*Total\s*Divisa[\s\S]{0,300}?(' + FOB_AMOUNT_PATTERN.pattern + r')\b', full_text, re.IGNORECASE)
     if fob_match: return parse_number(fob_match.group(1))
     
     fob_match_simple = re.search(r'FOB\s*Total\s*(' + FOB_AMOUNT_PATTERN.pattern + r')', full_text[:3000], re.IGNORECASE)
@@ -184,7 +184,7 @@ def extract_data_from_pdf_text(full_text):
         num_item = None
         idx_num = None
         for idx, line in enumerate(lines):
-            m_num = re.match(r'^(\d{4})\s+N\b', line)
+            m_num = re.match(r'^(\d{4})\s+N', line)
             if m_num:
                 num_item = m_num.group(1)
                 idx_num = idx
