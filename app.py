@@ -294,10 +294,10 @@ elif st.session_state.app_step == 2:
         
         st.dataframe(
             df_inc.style.format({
-                "FOB Principal": "{:,.2f}", 
+                "FOB Principal": "{:,.2f}",
                 "Suma Subítems": "{:,.2f}",
                 "Diferencia": "{:,.2f}"
-            }).background_gradient(subset=['Diferencia'], cmap='RdYlGn', vmin=-100, vmax=100),
+            }),
             use_container_width=True,
             hide_index=True
         )
