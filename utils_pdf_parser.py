@@ -308,6 +308,20 @@ def extract_data_from_pdf_text(full_text):
     
     if not data: return pd.DataFrame(columns=DEFAULT_COLS), global_fob, cond_venta
 
+    # Post-procesamiento: los sub-ítems heredan el proveedor del ítem padre.
+    # Razón: el sub-ítem es un desglose del mismo ítem comercial; la marca declarada
+    # en el sub-ítem es la marca del producto, pero el proveedor es el del ítem padre.
+    # Sin este paso, la misma partida se reparte entre proveedores incorrectos
+    # (ej: KOMATSU queda como CAT/CTP porque los sub-ítems declaran otra marca).
+    parent_brand_map = {
+        d['numItem']: d['proveedor']
+        for d in data
+        if not d['esSubitem'] and d['proveedor'] and is_valid_brand(d['proveedor'])
+    }
+    for d in data:
+        if d['esSubitem'] and d['itemPrincipal'] in parent_brand_map:
+            d['proveedor'] = parent_brand_map[d['itemPrincipal']]
+
     df = pd.DataFrame(data)
     df['tieneSubitems'] = False
     if not df.empty:
