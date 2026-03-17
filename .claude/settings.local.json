@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python -c \":*)",
       "Bash(python -c \"import py_compile; py_compile.compile\\(''utils_pdf_parser.py'', doraise=True\\); print\\(''OK''\\)\")",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(python -:*)"
     ]
   }
 }

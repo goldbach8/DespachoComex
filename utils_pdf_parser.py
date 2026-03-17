@@ -178,8 +178,15 @@ def extract_data_from_pdf_text(full_text):
         standard_block = full_text[start:end]
         lines = [l.strip() for l in standard_block.split('\n') if l.strip()]
 
-        brand_search_start = starts[i-1] if i > 0 else 0
-        brand_block = full_text[brand_search_start : end]
+        # Buscar marca en el bloque actual del ítem.
+        # Para el primer ítem (i=0): en algunos formatos (R579), el bloque de descripción
+        # y sufijos AA(MARCA) aparece ANTES del primer "N° Item" de la página (pre-bloque).
+        # Si no se encuentra AA en el bloque actual, se busca también en ese pre-bloque.
+        # Esto evita el bug original (starts[i-1]) que causaba falsos positivos en R634
+        # al incluir todo el bloque anterior; aquí solo el pre-bloque del primer ítem.
+        brand_block = standard_block
+        if i == 0 and starts[0] > 0:
+            brand_block = full_text[:starts[0]] + standard_block
 
         num_item = None
         idx_num = None
