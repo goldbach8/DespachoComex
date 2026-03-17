@@ -178,16 +178,6 @@ def extract_data_from_pdf_text(full_text):
         standard_block = full_text[start:end]
         lines = [l.strip() for l in standard_block.split('\n') if l.strip()]
 
-        # Buscar marca en el bloque actual del ítem.
-        # Para el primer ítem (i=0): en algunos formatos (R579), el bloque de descripción
-        # y sufijos AA(MARCA) aparece ANTES del primer "N° Item" de la página (pre-bloque).
-        # Si no se encuentra AA en el bloque actual, se busca también en ese pre-bloque.
-        # Esto evita el bug original (starts[i-1]) que causaba falsos positivos en R634
-        # al incluir todo el bloque anterior; aquí solo el pre-bloque del primer ítem.
-        brand_block = standard_block
-        if i == 0 and starts[0] > 0:
-            brand_block = full_text[:starts[0]] + standard_block
-
         num_item = None
         idx_num = None
         for idx, line in enumerate(lines):
@@ -213,29 +203,51 @@ def extract_data_from_pdf_text(full_text):
 
         if not posicion: continue
 
-        proveedor = None
+        # --- BÚSQUEDA DE MARCA ---
+        # En el formato SIM predominante, la sección "DEL ITEM / Sufijos de valor" con
+        # el AA(MARCA) se imprime al final de la página del ítem ANTERIOR (off-by-one).
+        # Estrategia: buscar primero en el sufijo del bloque anterior (después del número
+        # del ítem previo). Si no se encuentra, buscar en el bloque actual como fallback.
+        # Esto cubre tanto el formato R634 (off-by-one) como R579 (mismo bloque).
         regex_strategies = [
             r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
             r'\(\s*([^)]+?)\s*\)\s*(?:=|:)?\s*MARCA',
             r'(?:AA|A\s*A)\s*\(\s*([^)]+?)\s*\)',
             r'(?:AA|A\s*A)\s*\n\s*\(\s*([^)]+?)\s*\)'
         ]
-        
-        for pattern in regex_strategies:
-            matches = list(re.finditer(pattern, brand_block, re.IGNORECASE | re.DOTALL))
-            valid_matches = []
-            for match in matches:
-                candidate = match.group(1).strip()
-                if re.match(r'^[A-Z\s]+$', candidate) and " " in candidate:
-                     compact = candidate.replace(" ", "")
-                     if len(candidate) > len(compact) * 1.5: candidate = compact
-                
-                if is_valid_brand(candidate):
-                    valid_matches.append(candidate)
-            
-            if valid_matches:
-                proveedor = valid_matches[-1]
-                break 
+
+        def search_brand_in_text(text):
+            for pattern in regex_strategies:
+                matches = list(re.finditer(pattern, text, re.IGNORECASE | re.DOTALL))
+                valid = []
+                for match in matches:
+                    candidate = match.group(1).strip()
+                    if re.match(r'^[A-Z\s]+$', candidate) and " " in candidate:
+                        compact = candidate.replace(" ", "")
+                        if len(candidate) > len(compact) * 1.5:
+                            candidate = compact
+                    if is_valid_brand(candidate):
+                        valid.append(candidate)
+                if valid:
+                    return valid[-1]
+            return None
+
+        proveedor = None
+
+        # Prioridad 1: sufijo del bloque anterior (off-by-one predominante en SIM)
+        if i > 0:
+            prev_block_raw = full_text[starts[i - 1]:starts[i]]
+            prev_num_m = re.search(r'^\d{4}\s+N', prev_block_raw, re.MULTILINE)
+            if prev_num_m:
+                prev_suffix = prev_block_raw[prev_num_m.start():]
+                proveedor = search_brand_in_text(prev_suffix)
+        elif starts[0] > 0:
+            # Primer ítem: su descripción puede estar en el pre-bloque (antes del primer N° Item)
+            proveedor = search_brand_in_text(full_text[:starts[0]])
+
+        # Fallback: bloque actual (formatos donde la descripción está en el mismo bloque)
+        if not proveedor:
+            proveedor = search_brand_in_text(standard_block)
 
         # --- EXTRACCIÓN DE FOB REFINADA (Prioridad a Gemelos y Descarte por "UNIDAD") ---
         monto_fob = None
@@ -315,11 +327,10 @@ def extract_data_from_pdf_text(full_text):
     
     if not data: return pd.DataFrame(columns=DEFAULT_COLS), global_fob, cond_venta
 
-    # Post-procesamiento: los sub-ítems heredan el proveedor del ítem padre.
-    # Razón: el sub-ítem es un desglose del mismo ítem comercial; la marca declarada
-    # en el sub-ítem es la marca del producto, pero el proveedor es el del ítem padre.
-    # Sin este paso, la misma partida se reparte entre proveedores incorrectos
-    # (ej: KOMATSU queda como CAT/CTP porque los sub-ítems declaran otra marca).
+    # Post-procesamiento: los sub-ítems SIN marca propia heredan el proveedor del padre.
+    # Solo se aplica cuando el sub-ítem no declaró AA(BRAND)=MARCA propio y válido.
+    # Si el sub-ítem tiene su propia marca declarada (ej: sub-ítems de KOMATSU que
+    # declaran AA(CAT)=MARCA), se respeta esa marca y NO se sobreescribe con la del padre.
     parent_brand_map = {
         d['numItem']: d['proveedor']
         for d in data
@@ -327,7 +338,8 @@ def extract_data_from_pdf_text(full_text):
     }
     for d in data:
         if d['esSubitem'] and d['itemPrincipal'] in parent_brand_map:
-            d['proveedor'] = parent_brand_map[d['itemPrincipal']]
+            if not d['proveedor'] or not is_valid_brand(d['proveedor']):
+                d['proveedor'] = parent_brand_map[d['itemPrincipal']]
 
     df = pd.DataFrame(data)
     df['tieneSubitems'] = False
