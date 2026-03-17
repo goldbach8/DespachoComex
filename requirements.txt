@@ -1,6 +1,5 @@
-streamlit
-pandas
-pypdf
-xlsxwriter
-openpyxl
-matplotlib
+streamlit==1.41.1
+pandas==2.2.3
+pypdf==4.3.1
+xlsxwriter==3.2.9
+openpyxl==3.1.5
