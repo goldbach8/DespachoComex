@@ -10,7 +10,7 @@ from pypdf import PdfReader
 from initial_data import INITIAL_BK_LIST, INITIAL_DATE, INITIAL_SUPPLIERS
 from utils_pdf_parser import extract_data_from_pdf_text, extract_bk_list_from_pdf_text, extract_vendors_from_first_page
 from utils_data import get_grouped_data, generate_provider_summary
-from utils_bk import classify_bk, build_bk_set, classify_bk_with_set
+from utils_bk import classify_bk 
 
 # --- CONFIGURACIÓN DE RUTAS ---
 BK_LIST_PATH = "bk_list.json"
@@ -116,7 +116,6 @@ def next_step(step):
 def reset_app():
     st.session_state.pdf_reader = None
     st.session_state.pdf_data_loaded = False
-    st.session_state.pdf_filename = ""
     st.session_state.data_items = pd.DataFrame()
     st.session_state.proveedor_mapping = {}
     st.session_state.referencia = ""
@@ -124,7 +123,7 @@ def reset_app():
     st.session_state.cond_venta = None
     st.session_state.df_validation_fob = pd.DataFrame()
     st.session_state.df_results_grouped = pd.DataFrame()
-    st.session_state.detected_vendors = []
+    st.session_state.detected_vendors = [] 
     st.session_state.app_step = 1
 
 def initialize_session_state():
@@ -199,8 +198,7 @@ if st.session_state.app_step == 1:
                         st.session_state.global_fob_total = global_fob
                         st.session_state.cond_venta = cond_venta
                         st.session_state.pdf_data_loaded = True
-                        st.session_state.pdf_filename = sim_file.name
-                        st.session_state.detected_vendors = detected_vendors
+                        st.session_state.detected_vendors = detected_vendors 
                         
                         if detected_vendors:
                             st.toast(f"🏢 Se detectaron {len(detected_vendors)} vendedores en carátula.")
@@ -219,25 +217,7 @@ elif st.session_state.app_step == 2:
         st.warning("Sin datos."); st.stop()
     
     df_work = st.session_state.data_items.copy()
-
-    # Mostrar métricas de extracción
-    n_principales = len(df_work[df_work['esSubitem'] == False])
-    n_subitems = len(df_work[df_work['esSubitem'] == True])
-    n_con_sub = len(df_work[df_work['tieneSubitems'] == True])
-    fob_sum = df_work[(df_work['esSubitem'] == True) | ((df_work['esSubitem'] == False) & (df_work['tieneSubitems'] == False))]['montoFob'].sum()
-    global_fob = st.session_state.get('global_fob_total')
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Ítems principales", n_principales)
-    c2.metric("Sub-ítems", n_subitems)
-    c3.metric("Ítems con sub-ítems", n_con_sub)
-    if global_fob:
-        delta = round(fob_sum - global_fob, 2)
-        c4.metric("FOB extraído", f"{fob_sum:,.2f}", delta=f"{delta:,.2f} vs PDF")
-    else:
-        c4.metric("FOB extraído", f"{fob_sum:,.2f}")
-    st.markdown("---")
-
+    
     # Filtrar solo items relevantes
     mask_relevant = (df_work['esSubitem'] == True) | ((df_work['esSubitem'] == False) & (df_work['tieneSubitems'] == False))
     
@@ -294,10 +274,10 @@ elif st.session_state.app_step == 2:
         
         st.dataframe(
             df_inc.style.format({
-                "FOB Principal": "{:,.2f}",
+                "FOB Principal": "{:,.2f}", 
                 "Suma Subítems": "{:,.2f}",
                 "Diferencia": "{:,.2f}"
-            }),
+            }).background_gradient(subset=['Diferencia'], cmap='RdYlGn', vmin=-100, vmax=100),
             use_container_width=True,
             hide_index=True
         )
@@ -449,8 +429,7 @@ elif st.session_state.app_step == 4:
     st.markdown(f"### 📊 Reporte Final: {st.session_state.referencia}")
     try:
         grouped_data = get_grouped_data(st.session_state.data_items, st.session_state.proveedor_mapping)
-        bk_set = build_bk_set(st.session_state.bk_list)
-        grouped_data['Clasificación BK'] = grouped_data['Posición'].apply(lambda p: classify_bk_with_set(p, bk_set))
+        grouped_data['Clasificación BK'] = grouped_data.apply(lambda row: classify_bk(row['Posición'], st.session_state.bk_list), axis=1)
         grouped_data['BK'] = grouped_data['Clasificación BK'].apply(lambda x: 'X' if x == 'BK' else '')
         grouped_data['NO BK'] = grouped_data['Clasificación BK'].apply(lambda x: 'X' if x == 'NO BK' else '')
         
@@ -522,11 +501,7 @@ elif st.session_state.app_step == 4:
         
         st.markdown("---")
         st.subheader("📋 Resumen por Proveedor y % BK")
-        st.dataframe(
-            df_summary.style.format({"FOB Total": "{:,.2f}", "FOB BK": "{:,.2f}", "% BK": "{:.1f}%"}),
-            use_container_width=True,
-            hide_index=True
-        )
+        st.dataframe(df_summary.style.format({"FOB Total": "{:,.2f}", "% BK": "{:.1f}%"}), use_container_width=True, hide_index=True)
 
         st.subheader("📑 Detalle Agrupado por Posición")
         st.dataframe(df_final, use_container_width=True, hide_index=True)
@@ -535,33 +510,9 @@ elif st.session_state.app_step == 4:
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             df_final.to_excel(writer, sheet_name='Detalle', index=False)
             df_summary.to_excel(writer, sheet_name='Resumen_Proveedores', index=False)
-
-            wb = writer.book
-            fmt_num = wb.add_format({'num_format': '#,##0.00'})
-            fmt_pct = wb.add_format({'num_format': '0.0"%"'})
-            fmt_header = wb.add_format({'bold': True, 'bg_color': '#D9E1F2', 'border': 1})
-
-            ws_det = writer.sheets['Detalle']
-            ws_det.set_column('A:A', 18)   # Despacho Nro
-            ws_det.set_column('B:B', 22)   # Posición
-            ws_det.set_column('C:C', 10)   # Moneda
-            ws_det.set_column('D:D', 30, fmt_num)  # Monto
-            ws_det.set_column('E:F', 8)    # BK / NO BK
-            ws_det.set_column('G:G', 25)   # Proveedor
-
-            ws_sum = writer.sheets['Resumen_Proveedores']
-            ws_sum.set_column('A:A', 30)   # Proveedor
-            ws_sum.set_column('B:C', 15, fmt_num)  # FOB Total, FOB BK
-            ws_sum.set_column('D:D', 10, fmt_pct)  # % BK
-
-        st.download_button(
-            "📥 Descargar Excel Completo (.xlsx)",
-            data=buffer,
-            file_name=f"COM7466 - {st.session_state.referencia}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True
-        )
+            writer.sheets['Detalle'].set_column('A:G', 15)
+            
+        st.download_button("📥 Descargar Excel Completo (.xlsx)", data=buffer, file_name=f"COM7466 - {st.session_state.referencia}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
         
         if st.button("🔄 Iniciar Nuevo Análisis"):
             reset_app(); st.rerun()
